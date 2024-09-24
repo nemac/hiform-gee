@@ -20,10 +20,9 @@ var table2 = ee.FeatureCollection('users/srs4854gee/fs_surface_own_042622');
 
 ////////////////////////////////////////////////////////////////
 // Customization of user interface -
-//   Dave Michelson (dmichels@unca.edu) @ June 2020
-//   Jeff Bliss (jbliss@unca.edu) @ August 2020 - January 2021
-//   Jeff Bliss (jbliss@unca.edu) @ March 2023
-//   Sean Matthew (smatthe2@unca.edu) @ May 2023
+//   Dave Michelson (dmichels@unca.edu)
+//   Jeff Bliss (jbliss@unca.edu)
+//   Sean Matthew (smatthe2@unca.edu)
 //           https://nemac.unca.edu/
 ////////////////////////////////////////////////////////////////
 
@@ -63,7 +62,7 @@ var getLayer = helperFunctionsImport.getLayer;
 var map = Map;
 var user = 'FS'; // all 3 unsubmitted, DEFAULT state
 //var user = 'NonFS'; // all 3 auto-export to g-drive
-// limit draw toosl to just polygon
+// limit draw tools to just polygon
 var drawingTools = Map.drawingTools();
 drawingTools.setDrawModes(['polygon', 'point']);
 map.setControlVisibility(true);
@@ -84,6 +83,7 @@ map.setCenter(lng, lat, mapZoom);
 var preImageGreenestClip; // includes date and chosen index (NDVI at the moment)
 var postImageGreenestClip; // includes date and chosen index (NDVI at the moment)
 var ndviChangeProduct; // NDVI product
+var exportImageGeometry; // Capture map extent when "Do the change analysis" is clicked and use for export
 var defaultSatellite = ui.url.get('satellite', 'Sentinel 2 TOA');
 var currentDate = ee.Date(Date.now()).format('yyyy-MM-dd').getInfo();
 var mapExtentBufferMultiplier = 1;
@@ -685,7 +685,6 @@ function enablePanelWidgets(panel) {
 // create labels
 var versionDateLabel = createNewLabel('ver. 04/05/2024', 'horizontal', 'left', 'bold', '10px', '8px 8px 8px 8px');
 var title = createNewLabel('HiForm-2 Change Mapper', 'horizontal', 'left', 900, '18px', '8px 8px 8px 8px');
-//var title = createNewLabel('HiForm National Forest', 'horizontal', 'left', 900, '18px', '8px 8px 8px 8px');
 var satelliteLabel = createNewLabel('1. Choose Satellite', 'horizontal', 'left', 500, '16px', '12px 8px 0px 24px');
 var validDateRange = createNewLabel(
   'Start Date: ' + SATELLITE_PROPERTIES[defaultSatellite].startDate,
@@ -722,7 +721,6 @@ var satelliteSelectOnChange = function (newValue) {
   inspectorLabel.setValue(inspectorLabelDefaultMsg); // refresh inspector to default state
 };
 
-// var satelliteNames = ee.Dictionary(SATELLITE_PROPERTIES).keys().sort().getInfo();
 var satelliteNames = ee
   .Dictionary(SATELLITE_PROPERTIES)
   .keys()
@@ -813,26 +811,11 @@ var showSlidersButton = ui.Button({
   label: 'Show Cloud Mask Slider',
   onClick: function () {
     var maskLayer = getLayer('Blue Band Cloud Mask', map);
-    // var currentVisBBLabel = BBsliderLabel.style().get('shown');
-    // var currentVisBBSlider = BBsliderPost.style().get('shown');
     var currentVisSliderPanel = sliderPanel.style().get('shown');
-    // var currentVisB10Label = B10sliderLabel.style().get('shown');
-    // var currentVisB10Slider = B10sliderPost.style().get('shown');
-    // BBsliderLabel.style().set('shown', !currentVisBBLabel);
-    // BBsliderPost.style().set('shown', !currentVisBBSlider);
     if (!currentVisSliderPanel && maskLayer) {
       maskLayer.setShown(true);
     }
     sliderPanel.style().set('shown', !currentVisSliderPanel);
-    // B10sliderLabel.style().set('shown', !currentVisB10Label);
-    // B10sliderPost.style().set('shown', !currentVisB10Slider);
-
-    // var currentPanelWidth = leftPanel.style().get('width');
-    // if (currentPanelWidth === '280px') {
-    //   leftPanel.style().set('width', '1200px');
-    // } else {
-    //   leftPanel.style().set('width', '280px');
-    // }
   },
   style: {
     position: 'top-left',
@@ -865,7 +848,6 @@ var postMaskOnChangeBB = function (value) {
   // remove old layer
   removeLayerByName('Blue Band Cloud Mask', map);
 
-  // print('this is the value of the slider used for BB: ' + value);
   BBsliderPost.setDisabled(true);
   var bandPost = postImageGreenestClip.select(satelliteProps.bands.blue);
 
@@ -876,7 +858,6 @@ var postMaskOnChangeBB = function (value) {
     crs: projection,
     scale: 60,
   });
-  //var bandPostMask = bandPost.gt(value).selfMask();
   // end new resampling code
 
   var bandPostMask = resample.gt(value).selfMask();
@@ -909,37 +890,6 @@ var BBsliderPost = ui.Slider({
   onChange: postMaskOnChangeBB,
   disabled: true,
 });
-
-// var B10sliderLabel = ui.Label({
-//   value: 'Band 10 cloud mask',
-//   style: {
-//     position: 'top-left',
-//     minWidth: '150px',
-//     margin: '3px 8px 3px 64px',
-//     shown: false
-//   }
-// });
-
-// var postMaskOnChangeB10 = function(value) {
-//   removeLayerByName('B10 Mask', map);
-//   print('this is the value of the slider used for B10: ' + value);
-//   B10sliderPost.setDisabled(true);
-//   var bandPost = postImageGreenestClip.select('B10');
-//   var bandPostMask = bandPost.gt(value).selfMask();
-
-//   map.addLayer(bandPostMask, {min: 0, max: 500, palette: '000000'}, 'B10 Mask');
-
-//   B10sliderPost.setDisabled(false);
-// };
-
-// // Post Image Slider
-// var B10sliderPost = ui.Slider({
-//   min:0, max:1000, value:0, step:1,
-//   style: {position: 'top-left', margin: '3px 8px 3px 64px', stretch: 'horizontal', minWidth:'1000px', shown: false},
-//   onChange: postMaskOnChangeB10,
-//   direction: 'vertical',
-//   disabled: true
-// });
 
 //////////////////////////////////////////
 // END Blue Band Cloud Mask Sliders
@@ -1132,26 +1082,6 @@ var submit = ui.Button({
     BBsliderPost.style().set({ shown: false });
     BBsliderLabel.setValue('Calculating New Blue Band Cloud Mask Values. Please wait...');
     initializeCloudSlider(postImageGreenestClip.select(satelliteProps.bands.blue));
-
-    // DELETE OLD CLIENT SIDE STUFF IF SERVER SIDE IS GOOD
-    /* var minValue = minMaxValues[0].getInfo();
-    var maxValue = minMaxValues[1].getInfo();
-    var stepSize = (maxValue - minValue) / 1000;
-    // var stepSize = 0.0001
-    var defaultVal = (maxValue+minValue) / 2;
-
-    // Calculate the most significant digit
-    var msd = Math.pow(10, Math.floor(Math.log(stepSize) / Math.LN10));
-
-    // Round the number to 1 in the most significant digit
-    var roundedStep = Math.round(stepSize / msd) * msd;
-
-    BBsliderPost.setMin(minValue);
-    BBsliderPost.setMax(maxValue);
-    BBsliderPost.setStep(stepSize);
-    BBsliderPost.setValue(defaultVal); // default to average Average */
-
-    // exportImageToDriveTask(SATELLITE_PROPERTIES[satelliteSelector.getValue()]);
   },
   style: {
     minWidth: '150px',
@@ -1187,92 +1117,6 @@ var exportImageSelector = createUISelect(
 // EXPORT FUNCTIONS
 //////////////////////////////////////////
 
-var exportImageToGoogleDrive = function () {
-  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-  var todaysDate = new Date();
-  var yyyy = todaysDate.getFullYear().toString();
-  var mm = (todaysDate.getMonth() + 1).toString();
-  var dd = todaysDate.getDate().toString();
-  var hours = todaysDate.getHours().toString();
-  var minutes = todaysDate.getMinutes().toString();
-  var seconds = todaysDate.getSeconds().toString();
-  var rundate =
-    '_' +
-    yyyy +
-    (mm.split('').length === 1 ? '0' + mm : mm) +
-    (dd.split('').length === 1 ? '0' + dd : dd) +
-    '_' +
-    (hours.split('').length === 1 ? '0' + hours : hours) +
-    '_' +
-    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
-    '_' +
-    (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var tid = ee.data.newTaskId();
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-
-  // var geometry = proclaimed;
-  // var exportGeometry = proclaimed.geometry();
-
-  var imageToExport = ndviChangeProduct;
-  if (exportImageSelector.getValue() === 'Post True Color') {
-    imageToExport = postImageGreenestClip.select([
-      satelliteProps.bands.red,
-      satelliteProps.bands.green,
-      satelliteProps.bands.blue,
-    ]);
-  }
-  var full_config = {
-    crs: 'EPSG:4326', // for now wgs84
-    element: imageToExport, // exporting an image
-    type: 'EXPORT_IMAGE',
-    fileFormat: 'GEO_TIFF', // geotiff format
-    description: 'exported_image' + rundate, // I always date stamp stuff so it can't overwrite
-    region: geometry,
-    driveFileNamePrefix: 'image-name-' + rundate, // This is file name I always date stamp stuff so it can't overwrite
-    driveFolder: 'earth_engine_exports', // this is google drive folder
-    maxPixels: 10000000000000,
-    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
-  };
-  var msg = ee.data.startProcessing(tid, full_config); // this actually runs the export it sill asks the user if its okay to do this.
-};
-
-// var exportNDVIImageToGoogleDrive = function() {
-//   var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-//   var todaysDate = new Date();
-//   var yyyy = todaysDate.getFullYear().toString();
-//   var mm = (todaysDate.getMonth()+1).toString();
-//   var dd  = todaysDate.getDate().toString();
-//   var mmChars = mm.split('');
-//   var ddChars = dd.split('');
-//   var ddHours = todaysDate.getHours().toString().split('');
-//   var ddMinutes = todaysDate.getMinutes().toString().split('');
-//   var rundate = '_' + yyyy + '_' + (mmChars[1]?mm:"0"+mmChars[0]) + '_' +
-//   (ddChars[1]?dd:"0"+ddChars[0]) + '_' + (ddHours[1]?dd:"0"+ddHours[0]) + '_' +
-//   (ddMinutes[1]?dd:"0"+ddMinutes[0]);
-//   var tid = ee.data.newTaskId();
-//   var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-
-// // var geometry = proclaimed;
-// // var exportGeometry = proclaimed.geometry();
-
-//   var imageToExport = ndviChangeProduct;
-//   // var imageToExport = ndviChangeProduct.sldStyle(index_sld_map[changeType])
-
-//   var full_config = {
-//     crs: 'EPSG:4326',  // for now wgs84
-//     element: imageToExport,  // exporting an image
-//     type: 'EXPORT_IMAGE',
-//     fileFormat: 'GEO_TIFF',  // geotiff format
-//     description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
-//     region: geometry,
-//     driveFileNamePrefix: 'forest_change_export'+rundate, // This is file name I always date stamp stuff so it can't overwrite
-//     driveFolder: 'earth_engine_exports', // this is google drive folder
-//     maxPixels: 10000000000000,
-//     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale,  // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
-//   };
-//   var msg = ee.data.startProcessing(tid, full_config);  // this actually runs the export it sill asks the user if its okay to do this.
-// };
-
 var exportNDVIImageToGoogleDrive = function () {
   var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
   var todaysDate = new Date();
@@ -1294,8 +1138,7 @@ var exportNDVIImageToGoogleDrive = function () {
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
   var tid = ee.data.newTaskId();
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-  var forestMask = NLCDForestMask(geometry);
+  var forestMask = NLCDForestMask(exportImageGeometry);
 
   var imageToExport = ndviChangeProduct.sldStyle(sld_intervals_absolute_ndvi).mask(forestMask);
 
@@ -1305,7 +1148,7 @@ var exportNDVIImageToGoogleDrive = function () {
     type: 'EXPORT_IMAGE',
     fileFormat: 'GEO_TIFF', // geotiff format
     description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
-    region: geometry,
+    region: exportImageGeometry,
     driveFileNamePrefix: 'forest_change_export' + rundate, // This is file name I always date stamp stuff so it can't overwrite
     driveFolder: 'earth_engine_exports', // this is google drive folder
     maxPixels: 10000000000000,
@@ -1313,38 +1156,6 @@ var exportNDVIImageToGoogleDrive = function () {
   };
   var msg = ee.data.startProcessing(tid, full_config); // this actually runs the export it sill asks the user if its okay to do this.
 };
-
-// var exportNDVIImageToGoogleCloud = function() {
-//   var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-//   var todaysDate = new Date();
-//   var yyyy = todaysDate.getFullYear().toString();
-//   var mm = (todaysDate.getMonth()+1).toString();
-//   var dd  = todaysDate.getDate().toString();
-//   var mmChars = mm.split('');
-//   var ddChars = dd.split('');
-//   var ddHours = todaysDate.getHours().toString().split('');
-//   var ddMinutes = todaysDate.getMinutes().toString().split('');
-//   var rundate = '_' + yyyy + '_' + (mmChars[1]?mm:"0"+mmChars[0]) + '_' +
-//   (ddChars[1]?dd:"0"+ddChars[0]) + '_' + (ddHours[1]?dd:"0"+ddHours[0]) + '_' +
-//   (ddMinutes[1]?dd:"0"+ddMinutes[0]);
-//   var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-
-// // var geometry = surfown;
-// // var exportGeometry = surfown.geometry();
-
-//   var imageToExport = ndviChangeProduct;
-//   Export.image.toCloudStorage({
-//     crs: 'EPSG:4326',  // for now wgs84
-//     image: imageToExport,  // exporting an image
-//     fileFormat: 'GEO_TIFF',  // geotiff format
-//     description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
-//     region: geometry,
-//     bucket: 'earth_engine_exports',
-//     maxPixels: 10000000000000,
-//     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale,  // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
-//   });
-
-// };
 
 var exportNDVIImageToGoogleCloud = function () {
   var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
@@ -1366,19 +1177,16 @@ var exportNDVIImageToGoogleCloud = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-  var forestMask = NLCDForestMask(geometry);
+  var forestMask = NLCDForestMask(exportImageGeometry);
 
   var imageToExport = ndviChangeProduct.sldStyle(sld_intervals_absolute_ndvi).mask(forestMask);
-  // var geometry = surfown;
-  // var exportGeometry = surfown.geometry();
 
   Export.image.toCloudStorage({
     crs: 'EPSG:4326', // for now wgs84
     image: imageToExport, // exporting an image
     fileFormat: 'GEO_TIFF', // geotiff format
     description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
-    region: geometry,
+    region: exportImageGeometry,
     bucket: 'earth_engine_exports',
     maxPixels: 10000000000000,
     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
@@ -1405,11 +1213,8 @@ var exportPTCImageToGoogleDrive = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
+  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
   var tid = ee.data.newTaskId();
-
-  // var geometry = proclaimed;
-  // var exportGeometry = proclaimed.geometry();
 
   var imageToExport = postImageGreenestClip.select([
     satelliteProps.bands.red,
@@ -1423,7 +1228,7 @@ var exportPTCImageToGoogleDrive = function () {
     type: 'EXPORT_IMAGE',
     fileFormat: 'GEO_TIFF', // geotiff format
     description: 'post_true_color_export' + rundate, // I always date stamp stuff so it can't overwrite
-    region: geometry,
+    region: exportImageGeometry,
     driveFileNamePrefix: 'post_true_color_export' + rundate, // This is file name I always date stamp stuff so it can't overwrite
     driveFolder: 'earth_engine_exports', // this is google drive folder
     maxPixels: 10000000000000,
@@ -1452,26 +1257,6 @@ var exportPTCImageToGoogleCloud = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-  var bandsToExport = [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue];
-
-  // bandsToExport.forEach(function(bandName) {
-  //   var imageToExport = postImageGreenestClip.select(bandName);
-
-  //   Export.image.toCloudStorage({
-  //   crs: 'EPSG:4326',  // for now wgs84
-  //   image: imageToExport,  // exporting an image
-  //   fileFormat: 'GEO_TIFF',  // geotiff format
-  //   description: 'post_true_color_export_' + bandName + '_band' + rundate, // I always date stamp stuff so it can't overwrite
-  //   region: geometry,
-  //   bucket: 'earth_engine_exports',
-  //   maxPixels: 10000000000000,
-  //   scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale,  // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
-  // });
-  // });
-
-  // var geometry = proclaimed;
-  // var exportGeometry = proclaimed.geometry();
 
   var imageToExport = postImageGreenestClip.select([
     satelliteProps.bands.red,
@@ -1484,7 +1269,7 @@ var exportPTCImageToGoogleCloud = function () {
     image: imageToExport, // exporting an image
     fileFormat: 'GEO_TIFF', // geotiff format
     description: 'post_true_color_export' + rundate, // I always date stamp stuff so it can't overwrite
-    region: geometry,
+    region: exportImageGeometry,
     bucket: 'earth_engine_exports',
     maxPixels: 10000000000000,
     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
@@ -1511,10 +1296,6 @@ var exportImageToGoogleCloud = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-
-  // var geometry = proclaimed;
-  // var exportGeometry = proclaimed.geometry();
 
   var imageToExport = ndviChangeProduct;
   if (exportImageSelector.getValue() === 'Post True Color') {
@@ -1531,7 +1312,7 @@ var exportImageToGoogleCloud = function () {
     //bucket: 'ee-docs-demos',
     fileNamePrefix: 'image-name-' + rundate,
     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale,
-    region: geometry,
+    region: exportImageGeometry,
   });
 };
 
@@ -1554,10 +1335,6 @@ var exportImageToDriveTask = function (satelliteProps) {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-
-  // var geometry = proclaimed;
-  // var exportGeometry = proclaimed.geometry();
 
   var imageToExport = ndviChangeProduct;
   if (exportImageSelector.getValue() === 'Post True Color') {
@@ -1572,7 +1349,7 @@ var exportImageToDriveTask = function (satelliteProps) {
     description: 'Change_Product_Task' + rundate,
     fileNamePrefix: 'continuous_change_product' + rundate,
     scale: satelliteProps.scale,
-    region: geometry,
+    region: exportImageGeometry,
   });
 };
 
@@ -1745,15 +1522,6 @@ var exportShapefilesButton = ui.Button({
     margin: '3px 8px 12px 64px',
   },
 });
-
-// var exportImageButton = ui.Button({
-//   label: 'Export image to Drive',
-//   onClick: exportImageToGoogleDrive,
-//   style: {
-//     minWidth: '150px',
-//     margin: '3px 8px 3px 64px'
-//   }
-// });
 
 // Button for generating a URL
 var generateURLButton = ui.Button({
@@ -1973,17 +1741,11 @@ var leftPanel = ui.Panel({
     actionsLabel,
     submitPanel,
     generateURLButton,
-    // exportImageSelector,
-    // exportImageButton,
     exportNDVIImageButton,
     exportPTCImageButton,
-    // exportImageCloudButton,
     exportShapefilesButton,
-    // generatedURL,
     explorationLabel,
     showSlidersButton,
-    // B10sliderLabel,
-    // B10sliderPost,
     inspector,
     legendButton,
     panelButton,
@@ -2078,13 +1840,6 @@ map.onClick(function (coords) {
   });
 });
 
-console.log(map.drawingTools);
-
-/*map.drawingTools.onDraw(function(e) {
-  console.log('yo I drew');
-  console.log(e);
-});*/
-
 /////////////////////////////////////////////////////////////////
 // END MAP FUNCTIONS
 /////////////////////////////////////////////////////////////////
@@ -2092,6 +1847,9 @@ console.log(map.drawingTools);
 var submitChangeAnalysis = function (satelliteProps) {
   // remove old layers and disable submit button
   map.layers().reset();
+
+  // update geometry with map extent at time of analysis
+  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
 
   // set inspector label back to default value
   inspectorLabel.setValue(inspectorLabelDefaultMsg);
