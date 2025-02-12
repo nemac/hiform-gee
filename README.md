@@ -1,2 +1,3 @@
 # HiForm GEE
-This is just a copy of the hiform gee script that lives on Google Earth Engine
+This is the repository for HiForm Google Earth Engine React along with original script from GEE Console
+
