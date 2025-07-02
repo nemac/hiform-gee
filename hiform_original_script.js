@@ -1,6 +1,3 @@
-var table = ee.FeatureCollection('users/srs4854gee/fs_proclaimed_042622');
-var table2 = ee.FeatureCollection('users/srs4854gee/fs_surface_own_042622');
-
 ////////////////////////////////////////////////////////////////
 //  HIFORM NDVI CHANGE SCRIPT (https://HiForm.org)
 ////////////////////////////////////////////////////////////////
@@ -11,148 +8,64 @@ var table2 = ee.FeatureCollection('users/srs4854gee/fs_surface_own_042622');
 // Bill Christie, RS/GIS Analyst, USFS, Southern Research Station, william.m.christie@usda.gov
 // Steve Norman, Research Landscape Ecologist, USFS, Southern Research Station, steve.norman@usda.gov
 //    Resources - https://hiform.org/mapping-workflow
-//                https://forestthreats.org;
+//
+// Script Author and Maintainers:
+// National Environmental Modeling and Analysis Center (NEMAC)
+// https://nemac.unca.edu/
+// Jeff Bliss (jbliss@unca.edu)
+// Dave Michelson (dmichels@unca.edu)
+// Sean Matthew (smatthe2@unca.edu)
 
-//                find cloudfree1 - https://apps.sentinel-hub.com/eo-browser/?zoom=5&lat=38.32442&lng=-103.22754&themeId=DEFAULT-THEME&toTime=2021-06-11T10%3A59%3A39.478Z
-//                find cloudfree2 - https://showcase.earthengine.app/view/s2-sr-browser-s2cloudless-nb
+var table = ee.FeatureCollection('users/srs4854gee/fs_proclaimed_042622');
 
-//    christie maintenance - bottom of script
+// Cloud Score+ image collection. Note Cloud Score+ is produced from Sentinel-2
+// Level 1C data and can be applied to either L1C or L2A collections.
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
 
-////////////////////////////////////////////////////////////////
-// Customization of user interface -
-//   Dave Michelson (dmichels@unca.edu)
-//   Jeff Bliss (jbliss@unca.edu)
-//   Sean Matthew (smatthe2@unca.edu)
-//           https://nemac.unca.edu/
-////////////////////////////////////////////////////////////////
-
-// select a proclaimed boundary for analysis (based on choice use lines 70-73 to modify 65-67)
-
-// // var proclaimed = table.filter(ee.Filter.eq("UNIT_NM",'Nantahala National Forest'));
-// // var proclaimed = table.filter(ee.Filter.eq("UNIT_NM",'Pisgah National Forest'));
-// // var proclaimed = table.filter(ee.Filter.eq("UNIT_NM",'Uwharrie National Forest'));
-// // var proclaimed = table.filter(ee.Filter.eq("UNIT_NM",'Croatan National Forest'));
-
-// var proclaimed = table.filter(ee.Filter.eq("UNIT_NM",'De Soto National Forest'));
-
-// // var empty = ee.Image().byte();
-// // var outline = empty.paint({
-// //   featureCollection: surfown,
-// //   color: 1,
-// //   width: 1});
-// // Map.addLayer(outline, {palette: '66ff00'}, 'NF outline ras');
-// // Map.addLayer(surfown, {palette: '66ff00'}, 'NF outline poly');
-
-// var geometry = proclaimed;
-
-////////////////////////////////////////////////////////////////
-
-// Imports from other scripts
-var helperFunctionsImport = require('users/jbliss/hiform:HiForm_Multiple_Scripts/HelperFunctions');
-var stdDeviationImport = require('users/jbliss/hiform:HiForm_Multiple_Scripts/StandardDeviation');
-var removeLayerByName = helperFunctionsImport.removeLayerByName;
-var checkIfDateOkay = helperFunctionsImport.checkIfDateOkay;
-var getLayer = helperFunctionsImport.getLayer;
-
-/////////////////////////////////////////////////////////////////
-// BEGIN GLOBAL VARIABLES AND CONSTANTS
-/////////////////////////////////////////////////////////////////
-
-// Creates the map
-var map = Map;
 var user = 'FS'; // all 3 unsubmitted, DEFAULT state
 //var user = 'NonFS'; // all 3 auto-export to g-drive
 // limit draw tools to just polygon
-var drawingTools = Map.drawingTools();
-drawingTools.setDrawModes(['polygon', 'point']);
+
+// Map configuration
+var map = Map;
 map.setControlVisibility(true);
 var lng = ui.url.get('lng', -82.5795);
 var lat = ui.url.get('lat', 35.592);
 var mapZoom = ui.url.get('mapZoom', 12);
-
-// center on a nf
-// NC, Nantahala National Forest, -83.4096, 35.2092, 10
-// NC, Pisgah National Forest, -82.3858, 35.8885, 9
-// NC, Uwharrie National Forest, -79.9358, 35.3996, 10
-// NC, Croatan National Forest, -77.0347, 34.899, 10
-
-// MS, Desoto National Forest, -88.9908, 30.8506, 10
-
 map.setCenter(lng, lat, mapZoom);
+var drawingTools = Map.drawingTools();
+drawingTools.setDrawModes(['polygon', 'point']);
 
+// script global variables
+var stateBordersLayer; // storing globally to be able to rerender later
+var countyBordersLayer; // storing globally to be able to rerender later
+var fsProclaimedLayer; // storing globally to be able to rerender later
+var fsSurfaceOwnedWindowLayer; // storing globally to be able to rerender later
+var hillshadeLayer; // storing globally to be able to rerender later
+var ndviChangeForestOnlyLayer; // storing globally to be able to rerender later
+var ndviChangeEvergreenLayer; // storing globally to be able to rerender later
+var ndviChangeDeciduousLayer; // storing globally to be able to rerender later
+var ndviChangeAllLandsLayer; // storing globally to be able to rerender later
+var ndviChangeNoWaterLayer; // storing globally to be able to rerender later
 var preImageGreenestClip; // includes date and chosen index (NDVI at the moment)
 var postImageGreenestClip; // includes date and chosen index (NDVI at the moment)
+var preTrueColorLayer; // storing globally to be able to rerender later
+var postTrueColorLayer; // storing globally to be able to rerender later
 var ndviChangeProduct; // NDVI product
+var combinedCloudMask; // pre and post combined cloud mask using Cloud Score+ Image Collection
 var exportImageGeometry; // Capture map extent when "Do the change analysis" is clicked and use for export
 var defaultSatellite = ui.url.get('satellite', 'Sentinel 2 TOA');
-var currentDate = ee.Date(Date.now()).format('yyyy-MM-dd').getInfo();
-var mapExtentBufferMultiplier = 1;
+var currentDate = ee.Date(Date.now());
+var currentDateString = ee.Date(Date.now()).format('yyyy-MM-dd').getInfo();
 var inspectorLabelDefaultMsg = 'Click on a location for: \n- Dates used\n- NDVI\n- Min and max values';
+var CLOUD_THRESHOLD = 0.725;
+var QA_BAND = 'cs_cdf';
+var submitCounter = 0; // count the asynchronous calls to decide when to re-enable submit
+var layerReadyCounter = 0; // used to determine when pre and post true color are rendered
+var sentinel3ZoomListener; // global variable for map on zoom listener in sentinel 3 submit change analysis
+var changeType = ui.url.get('changeType', 'ABSOLUTE_NDVI');
 
 var SATELLITE_PROPERTIES = {
-  // 'Landsat 5 TOA': {
-  //   'satellite': 'LANDSAT/LT05/C02/T1_TOA',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'B1', 'green': 'B2', 'red': 'B3', 'nir': 'B4', 'swir1': 'B5', 'swir2': 'B7' },
-  //   'min': 0,
-  //   'max': 0.4,
-  //   'startDate': '1984-03 to 2012-05',
-  //   'endDate': '2012-05-05'
-  // },
-  // 'Landsat 5 SR': {
-  //   'satellite': 'LANDSAT/LT05/C02/T1_L2',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'SR_B1', 'green': 'SR_B2', 'red': 'SR_B3', 'nir': 'SR_B4', 'swir1': 'SR_B5', 'swir2': 'SR_B7', },
-  //   'min': 5000,
-  //   'max': 15000,
-  //   'startDate': '1984-03 to 2012-05',
-  //   'endDate': '2012-05-05'
-  // },
-  'Landsat 8 Real-Time': {
-    satellite: 'LANDSAT/LC08/C02/T1_RT_TOA',
-    bands: { blue: 'B2', green: 'B3', red: 'B4', nir: 'B5', swir1: 'B6', swir2: 'B7' },
-    scale: 30,
-    min: 0.03,
-    max: 0.2,
-    startDate: '2013-03-18',
-    endDate: currentDate,
-  },
-  // 'Landsat 8 TOA': {
-  //   'satellite': 'LANDSAT/LC08/C02/T1_TOA',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'B2', 'green': 'B3', 'red': 'B4', 'nir': 'B5', 'swir1': 'B6', 'swir2': 'B7', },
-  //   'min': 0,
-  //   'max': 0.4,
-  //   'startDate': '2013',
-  //   'endDate': currentDate
-  // },
-  // 'Landsat 8 SR': {
-  //   'satellite': 'LANDSAT/LC08/C02/T1_L2',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'SR_B2', 'green': 'SR_B3', 'red': 'SR_B4', 'nir': 'SR_B5', 'swir1': 'SR_B6', 'swir2': 'SR_B7', },
-  //   'min': 5000,
-  //   'max': 15000,
-  //   'startDate': '2013',
-  //   'endDate': currentDate
-  // },
-  // 'Landsat 9 TOA': {
-  //   'satellite': 'LANDSAT/LC09/C02/T1_TOA',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'B2', 'green': 'B3', 'red': 'B4', 'nir': 'B5', 'swir1': 'B6', 'swir2': 'B7', },
-  //   'min': 0.03,
-  //   'max': 0.2,
-  //   'startDate': '2021-10-31',
-  //   'endDate': currentDate
-  // },
-  // 'Landsat 9 SR': {
-  //   'satellite': 'LANDSAT/LC09/C02/T1_L2',
-  //   'scale': 30,
-  //   'bands': { 'blue': 'SR_B2', 'green': 'SR_B3', 'red': 'SR_B4', 'nir': 'SR_B5', 'swir1': 'SR_B6', 'swir2': 'SR_B7', },
-  //   'min': 7500,
-  //   'max': 15000,
-  //   'startDate': '2021-10-31',
-  //   'endDate': currentDate
-  // },
   'Sentinel 2 TOA': {
     satellite: 'COPERNICUS/S2_HARMONIZED',
     scale: 10,
@@ -172,7 +85,7 @@ var SATELLITE_PROPERTIES = {
     min: 300,
     max: 1500,
     startDate: '2015-06-23',
-    endDate: currentDate,
+    endDate: currentDateString,
   },
   'Sentinel 2 SR': {
     satellite: 'COPERNICUS/S2_SR_HARMONIZED',
@@ -193,7 +106,24 @@ var SATELLITE_PROPERTIES = {
     min: 300,
     max: 1500,
     startDate: '2017-03-28',
-    endDate: currentDate,
+    endDate: currentDateString,
+  },
+  'Sentinel 3 TOA': {
+    satellite: 'COPERNICUS/S3/OLCI',
+    scale: 240,
+    bands: {
+      blue: 'Oa04_radiance',
+      green: 'Oa06_radiance',
+      red: 'Oa08_radiance',
+      oa12: 'Oa12_radiance',
+      nir: 'Oa17_radiance',
+      oa20: 'Oa20_radiance'
+    },
+    min: 15,
+    max: 70,
+    gamma: 2.0,
+    startDate: '2016-10-18',
+    endDate: currentDateString
   },
   // The combined objects below have this weirdish looking thing for the "bands" key but it's
   // done this way so we don't have to rewrite everything else. Essentially the "sat0Bands" and "sat1Bands"
@@ -209,7 +139,7 @@ var SATELLITE_PROPERTIES = {
     sat1Bands: { blue: 'B2', green: 'B3', red: 'B4', nir: 'B5', swir1: 'B6', swir2: 'B7' },
     bands: { blue: 'blue', green: 'green', red: 'red', nir: 'nir', swir1: 'swir1', swir2: 'swir2' },
     startDate: '1984-03',
-    endDate: currentDate,
+    endDate: currentDateString,
     scale: 30,
     min: 0,
     max: 0.4,
@@ -223,7 +153,7 @@ var SATELLITE_PROPERTIES = {
     sat1Bands: { blue: 'SR_B2', green: 'SR_B3', red: 'SR_B4', nir: 'SR_B5', swir1: 'SR_B6', swir2: 'SR_B7' },
     bands: { blue: 'blue', green: 'green', red: 'red', nir: 'nir', swir1: 'swir1', swir2: 'swir2' },
     startDate: '1984-03',
-    endDate: currentDate,
+    endDate: currentDateString,
     scale: 30,
     min: 5000,
     max: 15000,
@@ -237,7 +167,7 @@ var SATELLITE_PROPERTIES = {
     sat1Bands: { blue: 'B2', green: 'B3', red: 'B4', nir: 'B5', swir1: 'B6', swir2: 'B7' },
     bands: { blue: 'blue', green: 'green', red: 'red', nir: 'nir', swir1: 'swir1', swir2: 'swir2' },
     startDate: '2013',
-    endDate: currentDate,
+    endDate: currentDateString,
     scale: 30,
     min: 0,
     max: 0.4,
@@ -250,10 +180,23 @@ var SATELLITE_PROPERTIES = {
     sat1Bands: { blue: 'SR_B2', green: 'SR_B3', red: 'SR_B4', nir: 'SR_B5', swir1: 'SR_B6', swir2: 'SR_B7' },
     bands: { blue: 'blue', green: 'green', red: 'red', nir: 'nir', swir1: 'swir1', swir2: 'swir2' },
     startDate: '2013',
-    endDate: currentDate,
+    endDate: currentDateString,
     scale: 30,
     min: 5000,
     max: 15000,
+  },
+  'L8/L9 Real-Time Combined': {
+    combined: true,
+    sat0: 'LANDSAT/LC08/C02/T1_RT_TOA',
+    sat0Bands: { blue: 'B2', green: 'B3', red: 'B4', nir: 'B5', swir1: 'B6', swir2: 'B7' },
+    sat1: 'LANDSAT/LC09/C02/T1_TOA',
+    sat1Bands: { blue: 'B2', green: 'B3', red: 'B4', nir: 'B5', swir1: 'B6', swir2: 'B7' },
+    bands: { blue: 'blue', green: 'green', red: 'red', nir: 'nir', swir1: 'swir1', swir2: 'swir2' },
+    scale: 30,
+    min: 0.03,
+    max: 0.2,
+    startDate: '2013-03-18',
+    endDate: currentDateString,
   },
 };
 
@@ -606,15 +549,106 @@ var sld_intervals_percent_ndvi =
   '</ColorMap>' +
   '</RasterSymbolizer>';
 
-var submitCounter = 0; // count the asynchronous calls to decide when to re-enable submit
-
 var index_sld_map = {
   ABSOLUTE_NDVI: sld_intervals_absolute_ndvi,
   PERCENT_NDVI: sld_intervals_percent_ndvi,
 };
+
 /////////////////////////////////////////////////////////////////
 // END GLOBAL VARIABLES AND CONSTANTS
 /////////////////////////////////////////////////////////////////
+
+
+/////////////////////////////////////////////////////////////////
+// BEGIN HELPER FUNCTIONS
+/////////////////////////////////////////////////////////////////
+
+function removeLayerByName(name, map) {
+  var m = map || Map;
+  var layers = m.layers().getJsArray();
+  var removedIndexes = [];
+  for (var i in layers) {
+    var lay = layers[i];
+    var lay_name = lay.getName();
+    if (lay_name === name) {
+      var e;
+      m.remove(lay);
+      removedIndexes.push(Number(i));
+    }
+  }
+  return removedIndexes;
+}
+
+function getLayer(name, map) {
+  var m = map || Map;
+  var layers = m.layers();
+  var lay = null;
+  var l = layers.length();
+  for (var i=0; i<l; i++) {
+    var layer = layers.get(i);
+    var n = layer.getName();
+    if (n === name) {
+      lay = layer;
+      break;
+    }
+  }
+  return lay;
+}
+
+// Helper function for date check
+function isValidDate(dateString) {
+  var dateObject = new Date(dateString);
+  return !isNaN(dateObject.getTime());
+}
+
+function checkIfDateOkay(startDate, endDate, selectedSatelliteProps) {
+  var regex = /^\d{4}-\d{2}-\d{2}$/; // YYYY-MM-DD
+  var okay = true;
+  var startDateMillis = ee.Date(startDate).millis();
+  var endDateMillis = ee.Date(endDate).millis();
+  var startOfDataMillis = ee.Date(selectedSatelliteProps.startDate).millis();
+  var endofDataMillis = ee.Date(selectedSatelliteProps.endDate).millis();
+
+  // check if date passed in is properly formatted
+  if (!regex.test(startDate)) {
+    print('start date is not properly formatted');
+    okay = false;
+  } else if (!regex.test(endDate)) {  // check if other date is properly formatted
+    print('end date is not properly formatted');
+    okay = false;
+  } else if (!isValidDate(startDate)) {
+    print('start date is not a valid calendar date');
+    okay=false;
+  } else if (!isValidDate(endDate)) { // check if the date is a real date
+    print('end date is not a valid calendar date');
+    okay=false;
+  } else if (startDateMillis < startOfDataMillis) {  // check if the date passed in is less than the start of valid satellite data
+    print('start date is less than start of valid satellite data');
+    okay = false;
+  } else if (startDateMillis > endofDataMillis) { // check if the date passed in is greater than end of valid satellite data
+    print('start date is greater than end of valid satellite data');
+    okay = false;
+  } else if (endDateMillis < startOfDataMillis) { // check if other date is less than the start of valid satellite date
+    print('end date is less than start of valid satellite data');
+    okay = false;
+  } else if (endDateMillis > endofDataMillis) { // check if other date is greater than the end of the valid satellite date
+    print('end date is greater than end of valid satellite data');
+    okay = false;
+  } else if (startDateMillis >= endDateMillis) { // check if start date is greater than or equal to the end date
+    print('start date is greater than end date.');
+    okay = false;
+  }
+  return okay;
+}
+
+/////////////////////////////////////////////////////////////////
+// END HELPER FUNCTIONS
+/////////////////////////////////////////////////////////////////
+
+
+
+
+
 
 /////////////////////////////////////////////////////////////////
 // BEGIN USER INTERFACE AND ASSOCIATED FUNCTIONS
@@ -647,23 +681,6 @@ var createUISelect = function (items, placeholder, value, onChange, style, disab
   });
 };
 
-function getLayerByName(layerName) {
-  var layers = Map.layers();
-
-  for (var i = 0; i < layers.length(); i++) {
-    var layer = layers.get(i);
-    var title = ee.String(layer.get('name'));
-
-    if (title.getInfo() === layerName) {
-      return layer;
-    }
-  }
-
-  return null; // Layer not found
-}
-
-// Helper functions to easily disable and enable all widgets for a panel
-
 // Function to disable all widgets within a panel
 function disablePanelWidgets(panel) {
   panel.widgets().forEach(function (widget) {
@@ -683,9 +700,10 @@ function enablePanelWidgets(panel) {
 }
 
 // create labels
-var versionDateLabel = createNewLabel('ver. 04/05/2024', 'horizontal', 'left', 'bold', '10px', '8px 8px 8px 8px');
+var versionDateLabel = createNewLabel('ver. 05/20/2025', 'horizontal', 'left', 'bold', '10px', '8px 8px 8px 8px');
 var title = createNewLabel('HiForm-2 Change Mapper', 'horizontal', 'left', 900, '18px', '8px 8px 8px 8px');
 var satelliteLabel = createNewLabel('1. Choose Satellite', 'horizontal', 'left', 500, '16px', '12px 8px 0px 24px');
+var cloudThresholdLabel = createNewLabel('2. Choose Cloud Threshold', 'horizontal', 'left', 500, '16px', '12px 8px 0px 24px');
 var validDateRange = createNewLabel(
   'Start Date: ' + SATELLITE_PROPERTIES[defaultSatellite].startDate,
   'horizontal',
@@ -694,9 +712,9 @@ var validDateRange = createNewLabel(
   '14px',
   '0 8px 12px 64px'
 );
-var dateSelectLabel = createNewLabel('2. Set Dates', 'horizontal', 'left', 500, '16px', '12px 8px 0px 24px');
+var dateSelectLabel = createNewLabel('3. Set Dates', 'horizontal', 'left', 500, '16px', '12px 8px 0px 24px');
 var preDisturbanceLabel = createNewLabel(
-  'Pre-Disturbance Image dates',
+  'Pre-disturbance range',
   'horizontal',
   'left',
   500,
@@ -704,30 +722,36 @@ var preDisturbanceLabel = createNewLabel(
   '3px 8px 0 64px'
 );
 var postDisturbanceLabel = createNewLabel(
-  'Post-Disturbance Image dates',
+  'Post-disturbance range',
   'horizontal',
   'left',
   500,
   '14px',
   '8px 8px 0 64px'
 );
-var actionsLabel = createNewLabel('3. Actions', 'horizontal', 'left', 500, '16px', '8px 8px 0 24px');
-var explorationLabel = createNewLabel('4. Exploration', 'horizontal', 'left', 500, '16px', '8px 8px 0 24px');
+var explorationLabel = createNewLabel('4. Explore', 'horizontal', 'left', 500, '16px', '8px 8px 0 24px');
+var shareExportLabel = createNewLabel('5. Share/Export', 'horizontal', 'left', 500, '16px', '8px 8px 0 24px');
 // end label creation
 
 // Create satellite UI selector.
 var satelliteSelectOnChange = function (newValue) {
   validDateRange.setValue('Start Date: ' + SATELLITE_PROPERTIES[newValue].startDate); // set new dates
   inspectorLabel.setValue(inspectorLabelDefaultMsg); // refresh inspector to default state
+  if (newValue === "Sentinel 3 TOA" || newValue === "L5/L8 SR Combined" || newValue === "L5/L8 TOA Combined" || newValue === "L8/L9 SR Combined" || newValue === "L8/L9 TOA Combined" || newValue === "L8/L9 Real-Time Combined") {
+    thresholdSelector.setDisabled(true);
+    exportCloudMaskButton.setDisabled(true);
+  } else {
+    thresholdSelector.setDisabled(false);
+    exportCloudMaskButton.setDisabled(false);
+  }
 };
 
 var satelliteNames = ee
   .Dictionary(SATELLITE_PROPERTIES)
   .keys()
   .sort()
-  .remove('Landsat 8 Real-Time')
-  .insert(2, 'Landsat 8 Real-Time')
   .getInfo();
+
 
 var satelliteSelector = createUISelect(
   satelliteNames,
@@ -738,162 +762,26 @@ var satelliteSelector = createUISelect(
   false
 );
 
-//////////////////////////////////////////
-// Blue Band Cloud Mask Sliders
-//////////////////////////////////////////
+// cloud threshold selector
 
-var minMaxValues = [0, 2000]; //default values before change analysis
-
-var initializeCloudSlider = function (image) {
-  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-
-  // TODO See if we can get this working with combined TOA
-  // check is this is a TOA combined
-  var isTOA = false;
-  if (satelliteProps.keys) {
-    for (var i = 0; i < satelliteProps.keys.length; i++) {
-      if (satelliteProps.keys[i].indexOf('TOA') !== -1) {
-        print('Blue Band Cloud Mask Slider currently unavailable for combined TOA Satellites');
-        isTOA = true; // Substring found in one of the strings
-        enableSubmit(); // make sure change analysis doesn't hang
-      }
-    }
+var thresholdSelectOnChange = function (threshold) {
+  if (threshold === 'Less') {
+    CLOUD_THRESHOLD = 0.6;
+  } else if (threshold === 'Moderate') {
+    CLOUD_THRESHOLD = 0.725;
+  } else if (threshold === 'More') {
+    CLOUD_THRESHOLD = 0.85;
   }
-  if (isTOA) {
-    return;
-  }
-  // Get the current map extent
-  var bounds = Map.getBounds(true);
-
-  // Clip the image to the map extent
-  var clippedImage = image.clip(bounds);
-
-  // Get the min and max pixel values
-  var minMax = clippedImage.reduceRegion({
-    reducer: ee.Reducer.minMax(),
-    geometry: bounds,
-    scale: Map.getScale(),
-  });
-  // Extract the min and max values
-  image.evaluate(function (img) {
-    var band = img.bands[0];
-    var bandMin = band.id + '_min';
-    var bandMax = band.id + '_max';
-    var minValue = minMax.getNumber(bandMin);
-    var maxValue = minMax.getNumber(bandMax);
-    // Return the result
-    var minMaxValues = ee.List([minValue, maxValue]);
-    minMaxValues.evaluate(function (param) {
-      minValue = param[0];
-      maxValue = param[1];
-
-      var stepSize = (maxValue - minValue) / 1000;
-      var defaultVal = (maxValue + minValue) / 2;
-      // Calculate the most significant digit
-      var msd = Math.pow(10, Math.floor(Math.log(stepSize) / Math.LN10));
-
-      // Round the number to 1 in the most significant digit
-      var roundedStep = Math.round(stepSize / msd) * msd;
-
-      BBsliderPost.setMin(minValue);
-      BBsliderPost.setMax(maxValue);
-      BBsliderPost.setStep(stepSize);
-      BBsliderPost.setValue(defaultVal); // default to average Average
-      BBsliderLabel.setValue('Cloud Mask (Blue Band)');
-      BBsliderPost.setDisabled(false);
-      BBsliderPost.style().set({ shown: true });
-      enableSubmit();
-    });
-  });
 };
 
-var showSlidersButton = ui.Button({
-  label: 'Show Cloud Mask Slider',
-  onClick: function () {
-    var maskLayer = getLayer('Blue Band Cloud Mask', map);
-    var currentVisSliderPanel = sliderPanel.style().get('shown');
-    if (!currentVisSliderPanel && maskLayer) {
-      maskLayer.setShown(true);
-    }
-    sliderPanel.style().set('shown', !currentVisSliderPanel);
-  },
-  style: {
-    position: 'top-left',
-    minWidth: '150px',
-    margin: '3px 8px 3px 64px',
-  },
-});
-
-var BBsliderLabel = ui.Label({
-  value: 'Cloud Mask (Blue Band)',
-  style: {
-    color: 'white',
-    backgroundColor: '#7e5f01',
-    position: 'top-center',
-    minWidth: '50px',
-    margin: '3px 8px 3px 8px',
-    shown: true,
-  },
-});
-
-var postMaskOnChangeBB = function (value) {
-  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-
-  // Find out if layer is toggled on or off
-  var prevLayer = getLayer('Blue Band Cloud Mask', map);
-  var prevShown = false;
-  if (prevLayer != null) {
-    prevShown = prevLayer.getShown();
-  }
-  // remove old layer
-  removeLayerByName('Blue Band Cloud Mask', map);
-
-  BBsliderPost.setDisabled(true);
-  var bandPost = postImageGreenestClip.select(satelliteProps.bands.blue);
-
-  // new code in here to play around with resampling to 60 meters
-  var projection = bandPost.select(satelliteProps.bands.blue).projection();
-  var bands = bandPost.select(satelliteProps.bands.blue);
-  var resample = bands.reproject({
-    crs: projection,
-    scale: 60,
-  });
-  // end new resampling code
-
-  var bandPostMask = resample.gt(value).selfMask();
-
-  map
-    .layers()
-    .insert(
-      9,
-      ui.Map.Layer(bandPostMask, { min: 500, max: 2002, palette: '000000' }, 'Blue Band Cloud Mask', prevShown)
-    );
-
-  BBsliderPost.setDisabled(false);
-};
-
-// Post Image Slider
-var BBsliderPost = ui.Slider({
-  min: 0,
-  max: 1000,
-  value: 500,
-  step: 1,
-  style: {
-    color: 'white',
-    backgroundColor: '#7e5f01',
-    position: 'top-center',
-    margin: '3px 8px 3px 8px',
-    height: '100%',
-    width: '550px',
-    shown: true,
-  },
-  onChange: postMaskOnChangeBB,
-  disabled: true,
-});
-
-//////////////////////////////////////////
-// END Blue Band Cloud Mask Sliders
-//////////////////////////////////////////
+var thresholdSelector = createUISelect(
+  ['Less', 'Moderate', 'More'],
+  'Moderate',
+  'Moderate',
+  thresholdSelectOnChange,
+  { textAlign: 'left', minWidth: '150px', margin: '3px 8px 3px 64px' },
+  false
+);
 
 // Track date error state
 var dateErrorLabel = ui.Label({
@@ -927,8 +815,8 @@ var disableSubmitOnDateError = function (dateErrorState) {
 };
 
 // Create pre-disturbance date selection boxes.
-var preDisturbanceStartDate = ui.url.get('preDisturbanceStartDate', '2023-06-01');
-var preDisturbanceEndDate = ui.url.get('preDisturbanceEndDate', '2023-08-30');
+var preDisturbanceStartDate = ui.url.get('preDisturbanceStartDate', currentDate.advance(-1, 'year').advance(-14, 'day').format('yyyy-MM-dd').getInfo());
+var preDisturbanceEndDate = ui.url.get('preDisturbanceEndDate', currentDate.advance(-1, 'year').format('yyyy-MM-dd').getInfo());
 var dateFilterPreDateStart = ui.Textbox({
   placeholder: 'YYYY-MM-DD',
   value: preDisturbanceStartDate,
@@ -981,8 +869,8 @@ var dateFilterPreDateEnd = ui.Textbox({
 });
 
 // Create post-disturbance date selection boxes.
-var postDisturbanceStartDate = ui.url.get('postDisturbanceStartDate', '2024-06-01');
-var postDisturbanceEndDate = ui.url.get('postDisturbanceEndDate', '2024-08-30');
+var postDisturbanceStartDate = ui.url.get('postDisturbanceStartDate', currentDate.advance(-14, 'day').format('yyyy-MM-dd').getInfo());
+var postDisturbanceEndDate = ui.url.get('postDisturbanceEndDate', currentDateString);
 var dateFilterPostDateStart = ui.Textbox({
   placeholder: 'YYYY-MM-DD',
   value: postDisturbanceStartDate,
@@ -1039,8 +927,9 @@ function disableSubmit() {
   disablePanelWidgets(leftPanel);
   submit.setLabel('Awaiting results...');
 }
+
 function enableSubmit(override) {
-  if (override !== true && submitCounter < 2) {
+  if (override !== true && submitCounter < 1) {
     submitCounter += 1;
   } else {
     submit.setLabel('Do the change analysis');
@@ -1070,18 +959,18 @@ map.add(errorPanel);
 var submit = ui.Button({
   label: 'Do the change analysis',
   onClick: function () {
-    var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-    submit.setDisabled(true);
-    disableSubmit();
-    submitChangeAnalysis(satelliteProps);
-    if (postImageGreenestClip.bandNames().getInfo().length === 0) {
-      print('No post image available. Returning.');
-      return;
+    if (sentinel3ZoomListener) {
+      map.unlisten(sentinel3ZoomListener);
     }
-    BBsliderPost.setDisabled(true);
-    BBsliderPost.style().set({ shown: false });
-    BBsliderLabel.setValue('Calculating New Blue Band Cloud Mask Values. Please wait...');
-    initializeCloudSlider(postImageGreenestClip.select(satelliteProps.bands.blue));
+    layerReadyCounter = 0;
+    var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
+    if (satelliteSelector.getValue() === "Sentinel 3 TOA") {
+      submitSentinel3ChangeAnalysis(satelliteProps);
+    } else {
+      submitChangeAnalysis(satelliteProps);
+      submit.setDisabled(true);
+      disableSubmit();
+    }
   },
   style: {
     minWidth: '150px',
@@ -1089,7 +978,17 @@ var submit = ui.Button({
   },
 });
 
-var submitCheckbox = ui.Checkbox({ label: '%', value: false });
+var submitCheckbox = ui.Checkbox({
+  label: '%',
+  value: changeType === 'PERCENT_NDVI' ? true : false,
+  onChange: function() {
+    if (changeType === 'ABSOLUTE_NDVI') {
+      changeType = 'PERCENT_NDVI';
+    } else {
+      changeType = 'ABSOLUTE_NDVI';
+    }
+  }
+});
 
 var submitInnerPanel = ui.Panel({
   widgets: [submit, submitCheckbox],
@@ -1138,9 +1037,9 @@ var exportNDVIImageToGoogleDrive = function () {
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
   var tid = ee.data.newTaskId();
-  var forestMask = NLCDForestMask(exportImageGeometry);
+  //var waterMask = NLCDWaterMask();
 
-  var imageToExport = ndviChangeProduct.sldStyle(sld_intervals_absolute_ndvi).mask(forestMask);
+  var imageToExport = ndviChangeProduct;
 
   var full_config = {
     crs: 'EPSG:4326', // for now wgs84
@@ -1177,8 +1076,86 @@ var exportNDVIImageToGoogleCloud = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
+  //var waterMask = NLCDWaterMask();
+
+  var imageToExport = ndviChangeProduct;
+
+  Export.image.toCloudStorage({
+    crs: 'EPSG:4326', // for now wgs84
+    image: imageToExport, // exporting an image
+    fileFormat: 'GEO_TIFF', // geotiff format
+    description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
+    region: exportImageGeometry,
+    bucket: 'earth_engine_exports',
+    maxPixels: 10000000000000,
+    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
+  });
+};
+
+var exportNDVIImageToGoogleDriveBill = function () {
+  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
+  var todaysDate = new Date();
+  var yyyy = todaysDate.getFullYear().toString();
+  var mm = (todaysDate.getMonth() + 1).toString();
+  var dd = todaysDate.getDate().toString();
+  var hours = todaysDate.getHours().toString();
+  var minutes = todaysDate.getMinutes().toString();
+  var seconds = todaysDate.getSeconds().toString();
+  var rundate =
+    '_' +
+    yyyy +
+    (mm.split('').length === 1 ? '0' + mm : mm) +
+    (dd.split('').length === 1 ? '0' + dd : dd) +
+    '_' +
+    (hours.split('').length === 1 ? '0' + hours : hours) +
+    '_' +
+    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
+    '_' +
+    (seconds.split('').length === 1 ? '0' + seconds : seconds);
+  var tid = ee.data.newTaskId();
   var forestMask = NLCDForestMask(exportImageGeometry);
 
+  print('bill drive');
+  var imageToExport = ndviChangeProduct.sldStyle(sld_intervals_absolute_ndvi).mask(forestMask);
+
+  var full_config = {
+    crs: 'EPSG:4326', // for now wgs84
+    element: imageToExport, // exporting an image
+    type: 'EXPORT_IMAGE',
+    fileFormat: 'GEO_TIFF', // geotiff format
+    description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
+    region: exportImageGeometry,
+    driveFileNamePrefix: 'forest_change_export' + rundate, // This is file name I always date stamp stuff so it can't overwrite
+    driveFolder: 'earth_engine_exports', // this is google drive folder
+    maxPixels: 10000000000000,
+    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
+  };
+  var msg = ee.data.startProcessing(tid, full_config); // this actually runs the export it sill asks the user if its okay to do this.
+};
+
+var exportNDVIImageToGoogleCloudBill = function () {
+  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
+  var todaysDate = new Date();
+  var yyyy = todaysDate.getFullYear().toString();
+  var mm = (todaysDate.getMonth() + 1).toString();
+  var dd = todaysDate.getDate().toString();
+  var hours = todaysDate.getHours().toString();
+  var minutes = todaysDate.getMinutes().toString();
+  var seconds = todaysDate.getSeconds().toString();
+  var rundate =
+    '_' +
+    yyyy +
+    (mm.split('').length === 1 ? '0' + mm : mm) +
+    (dd.split('').length === 1 ? '0' + dd : dd) +
+    '_' +
+    (hours.split('').length === 1 ? '0' + hours : hours) +
+    '_' +
+    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
+    '_' +
+    (seconds.split('').length === 1 ? '0' + seconds : seconds);
+  var forestMask = NLCDForestMask(exportImageGeometry);
+
+  print('bill cloud');
   var imageToExport = ndviChangeProduct.sldStyle(sld_intervals_absolute_ndvi).mask(forestMask);
 
   Export.image.toCloudStorage({
@@ -1186,6 +1163,80 @@ var exportNDVIImageToGoogleCloud = function () {
     image: imageToExport, // exporting an image
     fileFormat: 'GEO_TIFF', // geotiff format
     description: 'forest_change_export' + rundate, // I always date stamp stuff so it can't overwrite
+    region: exportImageGeometry,
+    bucket: 'earth_engine_exports',
+    maxPixels: 10000000000000,
+    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
+  });
+};
+
+var exportCloudMaskToGoogleDrive = function () {
+  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
+  var todaysDate = new Date();
+  var yyyy = todaysDate.getFullYear().toString();
+  var mm = (todaysDate.getMonth() + 1).toString();
+  var dd = todaysDate.getDate().toString();
+  var hours = todaysDate.getHours().toString();
+  var minutes = todaysDate.getMinutes().toString();
+  var seconds = todaysDate.getSeconds().toString();
+  var rundate =
+    '_' +
+    yyyy +
+    (mm.split('').length === 1 ? '0' + mm : mm) +
+    (dd.split('').length === 1 ? '0' + dd : dd) +
+    '_' +
+    (hours.split('').length === 1 ? '0' + hours : hours) +
+    '_' +
+    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
+    '_' +
+    (seconds.split('').length === 1 ? '0' + seconds : seconds);
+  var tid = ee.data.newTaskId();
+
+  var imageToExport = combinedCloudMask.selfMask();
+
+  var full_config = {
+    crs: 'EPSG:4326', // for now wgs84
+    element: imageToExport, // exporting an image
+    type: 'EXPORT_IMAGE',
+    fileFormat: 'GEO_TIFF', // geotiff format
+    description: 'cloud_mask_export' + rundate, // I always date stamp stuff so it can't overwrite
+    region: exportImageGeometry,
+    driveFileNamePrefix: 'cloud_mask_export' + rundate, // This is file name I always date stamp stuff so it can't overwrite
+    driveFolder: 'earth_engine_exports', // this is google drive folder
+    maxPixels: 10000000000000,
+    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
+  };
+  var msg = ee.data.startProcessing(tid, full_config); // this actually runs the export it sill asks the user if its okay to do this.
+};
+
+var exportCloudMaskToGoogleCloud = function () {
+  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
+  var todaysDate = new Date();
+  var yyyy = todaysDate.getFullYear().toString();
+  var mm = (todaysDate.getMonth() + 1).toString();
+  var dd = todaysDate.getDate().toString();
+  var hours = todaysDate.getHours().toString();
+  var minutes = todaysDate.getMinutes().toString();
+  var seconds = todaysDate.getSeconds().toString();
+  var rundate =
+    '_' +
+    yyyy +
+    (mm.split('').length === 1 ? '0' + mm : mm) +
+    (dd.split('').length === 1 ? '0' + dd : dd) +
+    '_' +
+    (hours.split('').length === 1 ? '0' + hours : hours) +
+    '_' +
+    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
+    '_' +
+    (seconds.split('').length === 1 ? '0' + seconds : seconds);
+
+  var imageToExport = combinedCloudMask.selfMask();
+
+  Export.image.toCloudStorage({
+    crs: 'EPSG:4326', // for now wgs84
+    image: imageToExport, // exporting an image
+    fileFormat: 'GEO_TIFF', // geotiff format
+    description: 'cloud_mask_export' + rundate, // I always date stamp stuff so it can't overwrite
     region: exportImageGeometry,
     bucket: 'earth_engine_exports',
     maxPixels: 10000000000000,
@@ -1213,7 +1264,7 @@ var exportPTCImageToGoogleDrive = function () {
     (minutes.split('').length === 1 ? '0' + minutes : minutes) +
     '_' +
     (seconds.split('').length === 1 ? '0' + seconds : seconds);
-  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
+  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
   var tid = ee.data.newTaskId();
 
   var imageToExport = postImageGreenestClip.select([
@@ -1275,92 +1326,6 @@ var exportPTCImageToGoogleCloud = function () {
     scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale, // this maybe 10, 15, 30, 250 depending on sat. platform sentinel, landsat, or modis
   });
 };
-
-var exportImageToGoogleCloud = function () {
-  var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
-  var todaysDate = new Date();
-  var yyyy = todaysDate.getFullYear().toString();
-  var mm = (todaysDate.getMonth() + 1).toString();
-  var dd = todaysDate.getDate().toString();
-  var hours = todaysDate.getHours().toString();
-  var minutes = todaysDate.getMinutes().toString();
-  var seconds = todaysDate.getSeconds().toString();
-  var rundate =
-    '_' +
-    yyyy +
-    (mm.split('').length === 1 ? '0' + mm : mm) +
-    (dd.split('').length === 1 ? '0' + dd : dd) +
-    '_' +
-    (hours.split('').length === 1 ? '0' + hours : hours) +
-    '_' +
-    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
-    '_' +
-    (seconds.split('').length === 1 ? '0' + seconds : seconds);
-
-  var imageToExport = ndviChangeProduct;
-  if (exportImageSelector.getValue() === 'Post True Color') {
-    imageToExport = postImageGreenestClip.select([
-      satelliteProps.bands.red,
-      satelliteProps.bands.green,
-      satelliteProps.bands.blue,
-    ]);
-  }
-  Export.image.toCloudStorage({
-    image: imageToExport,
-    description: 'export image to google cloud',
-    //assetId: 'exampleExport',
-    //bucket: 'ee-docs-demos',
-    fileNamePrefix: 'image-name-' + rundate,
-    scale: SATELLITE_PROPERTIES[satelliteSelector.getValue()].scale,
-    region: exportImageGeometry,
-  });
-};
-
-var exportImageToDriveTask = function (satelliteProps) {
-  var todaysDate = new Date();
-  var yyyy = todaysDate.getFullYear().toString();
-  var mm = (todaysDate.getMonth() + 1).toString();
-  var dd = todaysDate.getDate().toString();
-  var hours = todaysDate.getHours().toString();
-  var minutes = todaysDate.getMinutes().toString();
-  var seconds = todaysDate.getSeconds().toString();
-  var rundate =
-    '_' +
-    yyyy +
-    (mm.split('').length === 1 ? '0' + mm : mm) +
-    (dd.split('').length === 1 ? '0' + dd : dd) +
-    '_' +
-    (hours.split('').length === 1 ? '0' + hours : hours) +
-    '_' +
-    (minutes.split('').length === 1 ? '0' + minutes : minutes) +
-    '_' +
-    (seconds.split('').length === 1 ? '0' + seconds : seconds);
-
-  var imageToExport = ndviChangeProduct;
-  if (exportImageSelector.getValue() === 'Post True Color') {
-    imageToExport = postImageGreenestClip.select([
-      satelliteProps.bands.red,
-      satelliteProps.bands.green,
-      satelliteProps.bands.blue,
-    ]);
-  }
-  Export.image.toDrive({
-    image: imageToExport,
-    description: 'Change_Product_Task' + rundate,
-    fileNamePrefix: 'continuous_change_product' + rundate,
-    scale: satelliteProps.scale,
-    region: exportImageGeometry,
-  });
-};
-
-var exportImageCloudButton = ui.Button({
-  label: 'Export image to Cloud',
-  onClick: exportImageToGoogleCloud,
-  style: {
-    minWidth: '150px',
-    margin: '3px 8px 3px 64px',
-  },
-});
 
 var splitGeometries = function (fc) {
   // Separate points and polygons to create separate shapefiles when both present
@@ -1482,12 +1447,16 @@ var userFunctions = {
   NonFS: {
     exportShapefiles: exportShapefilesToGoogleDrive,
     ExportNDVI: exportNDVIImageToGoogleDrive,
+    ExportNDVIBill: exportNDVIImageToGoogleDriveBill,
     ExportPTC: exportPTCImageToGoogleDrive,
+    ExportCloud: exportCloudMaskToGoogleDrive
   },
   FS: {
     exportShapefiles: exportShapefilesToGoogleCloud,
     ExportNDVI: exportNDVIImageToGoogleCloud,
+    ExportNDVIBill: exportNDVIImageToGoogleCloudBill,
     ExportPTC: exportPTCImageToGoogleCloud,
+    ExportCloud: exportCloudMaskToGoogleCloud
   },
 };
 
@@ -1495,7 +1464,7 @@ var userFunctions = {
 var exportFunctions = userFunctions[user];
 
 var exportNDVIImageButton = ui.Button({
-  label: 'Export Forest Change',
+  label: 'Export all-lands change values',
   onClick: exportFunctions.ExportNDVI,
   style: {
     minWidth: '150px',
@@ -1503,9 +1472,28 @@ var exportNDVIImageButton = ui.Button({
   },
 });
 
+// This button has been added to allow Bill C to export 3-band rgb sld masked forest change products
+var exportNDVIImageButtonBill = ui.Button({
+  label: 'Export forest change geo-RGB',
+  onClick: exportFunctions.ExportNDVIBill,
+  style: {
+    minWidth: '150px',
+    margin: '3px 8px 3px 64px',
+  },
+});
+
 var exportPTCImageButton = ui.Button({
-  label: 'Export Post True Color',
+  label: 'Export post true color',
   onClick: exportFunctions.ExportPTC,
+  style: {
+    minWidth: '150px',
+    margin: '3px 8px 3px 64px',
+  },
+});
+
+var exportCloudMaskButton = ui.Button({
+  label: 'Export cloud mask',
+  onClick: exportFunctions.ExportCloud,
   style: {
     minWidth: '150px',
     margin: '3px 8px 3px 64px',
@@ -1514,7 +1502,7 @@ var exportPTCImageButton = ui.Button({
 
 // Button for export Polygon
 var exportShapefilesButton = ui.Button({
-  label: 'Export Drawn Polygon(s)',
+  label: 'Export drawn polygon(s)',
   // onClick: exportShapefilesToGoogleCloud,
   onClick: exportFunctions.exportShapefiles,
   style: {
@@ -1538,38 +1526,42 @@ var generateURLButton = ui.Button({
     ui.url.set('lng', lng);
     ui.url.set('lat', lat);
     ui.url.set('mapZoom', map.getZoom());
-    ui.url.set('autoRun', false);
+    ui.url.set('changeType', changeType);
+    ui.url.set('autoRun', true);
     generatedURL.setUrl(
       'https://code.earthengine.google.com/' +
-        // + ui.url.get('hexCode')
-        '?hideCode=true' +
-        '#satellite=' +
-        ui.url.get('satellite') +
-        ';' +
-        'preDisturbanceStartDate=' +
-        ui.url.get('preDisturbanceStartDate') +
-        ';' +
-        'preDisturbanceEndDate=' +
-        ui.url.get('preDisturbanceEndDate') +
-        ';' +
-        'postDisturbanceStartDate=' +
-        ui.url.get('postDisturbanceStartDate') +
-        ';' +
-        'postDisturbanceEndDate=' +
-        ui.url.get('postDisturbanceEndDate') +
-        ';' +
-        'lng=' +
-        ui.url.get('lng') +
-        ';' +
-        'lat=' +
-        ui.url.get('lat') +
-        ';' +
-        'mapZoom=' +
-        ui.url.get('mapZoom') +
-        ';' +
-        'autoRun=' +
-        ui.url.get('autoRun') +
-        ';'
+      // + ui.url.get('hexCode')
+      '?hideCode=true' +
+      '#satellite=' +
+      ui.url.get('satellite') +
+      ';' +
+      'preDisturbanceStartDate=' +
+      ui.url.get('preDisturbanceStartDate') +
+      ';' +
+      'preDisturbanceEndDate=' +
+      ui.url.get('preDisturbanceEndDate') +
+      ';' +
+      'postDisturbanceStartDate=' +
+      ui.url.get('postDisturbanceStartDate') +
+      ';' +
+      'postDisturbanceEndDate=' +
+      ui.url.get('postDisturbanceEndDate') +
+      ';' +
+      'lng=' +
+      ui.url.get('lng') +
+      ';' +
+      'lat=' +
+      ui.url.get('lat') +
+      ';' +
+      'mapZoom=' +
+      ui.url.get('mapZoom') +
+      ';' +
+      'changeType=' +
+      ui.url.get('changeType') +
+      ';' +
+      'autoRun=' +
+      ui.url.get('autoRun') +
+      ';'
     );
     // + 'hexCode=' + ui.url.get('hexCode') + ';');
     generatedURL.style().set('shown', true);
@@ -1731,6 +1723,8 @@ var leftPanel = ui.Panel({
     satelliteLabel,
     satelliteSelector,
     validDateRange,
+    cloudThresholdLabel,
+    thresholdSelector,
     dateSelectLabel,
     preDisturbanceLabel,
     dateFilterPreDateStart,
@@ -1738,17 +1732,18 @@ var leftPanel = ui.Panel({
     postDisturbanceLabel,
     dateFilterPostDateStart,
     dateFilterPostDateEnd,
-    actionsLabel,
-    submitPanel,
-    generateURLButton,
-    exportNDVIImageButton,
-    exportPTCImageButton,
-    exportShapefilesButton,
     explorationLabel,
-    showSlidersButton,
+    submitPanel,
     inspector,
     legendButton,
-    panelButton,
+    shareExportLabel,
+    generateURLButton,
+    exportNDVIImageButton,
+    exportNDVIImageButtonBill, // This is the rgb ndvi export button
+    exportPTCImageButton,
+    exportCloudMaskButton,
+    exportShapefilesButton,
+    // panelButton, // Commenting out for now
     versionDateLabel,
   ],
   style: {
@@ -1757,20 +1752,6 @@ var leftPanel = ui.Panel({
   },
 });
 
-var sliderPanel = ui.Panel({
-  layout: ui.Panel.Layout.flow('horizontal'),
-  style: {
-    position: 'bottom-left',
-    width: '800px',
-    height: '60px',
-    backgroundColor: '#7e5f01',
-    border: '1px solid #c4ac84',
-    shown: false,
-  },
-  widgets: [BBsliderLabel, BBsliderPost],
-});
-
-// Add some widgets or elements to the right panel.
 
 /////////////////////////////////////////////////////////////////
 // END USER INTERFACE AND ASSOCIATED FUNCTIONS
@@ -1794,17 +1775,15 @@ map.onClick(function (coords) {
   var satelliteProps = SATELLITE_PROPERTIES[satelliteSelector.getValue()];
   var postStart = ee.Date(dateFilterPostDateStart.getValue());
   var postEnd = ee.Date(dateFilterPostDateEnd.getValue());
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
+  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
 
   var click_point = ee.Geometry.Point(coords.lon, coords.lat);
-  var preDate = getLayer('Pre Date Used', map)
-    .getEeObject()
+  var preDate = preImageGreenestClip
     .select('date')
     .reduceRegions(click_point, ee.Reducer.first(), satelliteProps.scale)
     .first()
     .get('first');
-  var postDate = getLayer('Post Date Used', map)
-    .getEeObject()
+  var postDate = postImageGreenestClip
     .select('date')
     .reduceRegions(click_point, ee.Reducer.first(), satelliteProps.scale)
     .first()
@@ -1829,13 +1808,13 @@ map.onClick(function (coords) {
   }).evaluate(function (params) {
     inspectorLabel.setValue(
       'pre date: ' +
-        params.preDate +
-        '\npost date: ' +
-        params.postDate +
-        '\npre-NDVI: ' +
-        params.preNDVI.toFixed(2) +
-        '\ndelta-NDVI: ' +
-        params.deltaNDVI.toFixed(2)
+      params.preDate +
+      '\npost date: ' +
+      params.postDate +
+      '\npre-NDVI: ' +
+      params.preNDVI.toFixed(2) +
+      '\ndelta-NDVI: ' +
+      params.deltaNDVI.toFixed(2)
     );
   });
 });
@@ -1844,12 +1823,361 @@ map.onClick(function (coords) {
 // END MAP FUNCTIONS
 /////////////////////////////////////////////////////////////////
 
-var submitChangeAnalysis = function (satelliteProps) {
-  // remove old layers and disable submit button
+
+
+
+/////////////////////////////////////////////////////////////////
+// BEGIN MAIN LOGIC FOR CHANGE ANALYSIS
+/////////////////////////////////////////////////////////////////
+
+// Function to add layers to map in correct order
+var addLayersToMap = function() {
+  if (layerReadyCounter < 1) { // Needs to be 2 for both pre and post true color
+    layerReadyCounter += 1;
+    return;
+  }
+
+  // remove old layers
   map.layers().reset();
+  // add layers in correct order once pre and post true color have finished
+  map.addLayer(postImageGreenestClip.select('date').randomVisualizer(), {}, 'Post Date Used', false);
+  map.addLayer(preImageGreenestClip.select('date').randomVisualizer(), {}, 'Pre Date Used', false);
+  map.add(postTrueColorLayer);
+  map.add(preTrueColorLayer);
+
+  map.addLayer(ndviChangeAllLandsLayer, {}, 'NDVI change - all lands', false);
+  // map.addLayer(ndviChangeNoWaterLayer,  {}, 'NDVI change - no water', false);
+  map.addLayer(ndviChangeDeciduousLayer, {}, 'NDVI change - deciduous forest only', false);
+  map.addLayer(ndviChangeEvergreenLayer, {}, 'NDVI change - evergreen forest only', false);
+  map.addLayer(ndviChangeForestOnlyLayer, {}, 'NDVI change - forest only', true);
+  if (satelliteSelector.getValue() === "Sentinel 2 TOA" || satelliteSelector.getValue() === "Sentinel 2 SR") {
+    map.addLayer(combinedCloudMask.selfMask(), {palette: ['000000']}, 'Combined Cloud Mask', false);
+  }
+  addHillshade(exportImageGeometry); // draw the hillshade
+  addBoundaries(); // redraw the app boundaries
+};
+
+
+// A distinct sentinel 3 workflow that flows better
+// TODO: Make distinct sentinel 2 and landsat workflows
+var submitSentinel3ChangeAnalysis = function (satelliteProps) {
+  map.layers().reset();
+  // make global layers null
+  ndviChangeForestOnlyLayer = null;
+  ndviChangeEvergreenLayer = null;
+  ndviChangeDeciduousLayer = null;
+  ndviChangeAllLandsLayer = null;
+  ndviChangeNoWaterLayer = null;
+  preImageGreenestClip = null;
+  postImageGreenestClip = null;
+  preTrueColorLayer = null;
+  postTrueColorLayer = null;
+  ndviChangeProduct = null;
+  combinedCloudMask = null;
 
   // update geometry with map extent at time of analysis
-  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
+  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
+
+  // set inspector label back to default value
+  inspectorLabel.setValue(inspectorLabelDefaultMsg);
+
+  var preStart = ee.Date(dateFilterPreDateStart.getValue());
+  var preEnd = ee.Date(dateFilterPreDateEnd.getValue());
+  var postStart = ee.Date(dateFilterPostDateStart.getValue());
+  var postEnd = ee.Date(dateFilterPostDateEnd.getValue());
+  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
+  preImageGreenestClip = disturbance(satelliteProps, 'NDVI', preStart, preEnd, geometry);
+  postImageGreenestClip = disturbance(satelliteProps, 'NDVI', postStart, postEnd, geometry);
+
+  var forestMask = NLCDForestMask(geometry);
+  var deciduousMask = NLCDDeciduousMask(geometry);
+  var evergreenMask = NLCDEvergreenMask(geometry);
+  var waterMask = NLCDWaterMask();
+  var postMINUSpre, absNDVIc, absNDVIc_x100;
+
+  if (submitCheckbox.getValue() === true) {
+    changeType = 'PERCENT_NDVI';
+  }
+
+  if (changeType === 'ABSOLUTE_NDVI') {
+    postMINUSpre = postImageGreenestClip.subtract(preImageGreenestClip);
+    // rescale to signed integer 8bit (-127 - 127) to reduce file size
+    absNDVIc = postMINUSpre.select('NDVI');
+    absNDVIc_x100 = absNDVIc.multiply(100);
+    ndviChangeProduct = absNDVIc_x100.int8();
+  } else {
+    // assumed to be 'PERCENT_NDVI'
+    postMINUSpre = postImageGreenestClip.subtract(preImageGreenestClip).divide(preImageGreenestClip);
+    // rescale to signed integer 8bit (-127 - 127) to reduce file size
+    absNDVIc = postMINUSpre.select('NDVI');
+    absNDVIc_x100 = absNDVIc.multiply(100);
+    ndviChangeProduct = absNDVIc_x100.int8();
+  }
+
+  ndviChangeAllLandsLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry);
+  ndviChangeNoWaterLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry);
+  ndviChangeDeciduousLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(deciduousMask).clip(geometry);
+  ndviChangeEvergreenLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(evergreenMask).clip(geometry);
+
+  map.addLayer(postImageGreenestClip.select('date').randomVisualizer(), {}, 'Post Date Used', false);
+  map.addLayer(preImageGreenestClip.select('date').randomVisualizer(), {}, 'Pre Date Used', false);
+
+  postTrueColorLayer = ui.Map.Layer({
+    eeObject: postImageGreenestClip,
+    visParams: {
+      bands: [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],
+      min: satelliteProps.min,
+      max: satelliteProps.max,
+      gamma: satelliteProps.gamma
+    },
+    name: "Post True Color",
+    shown: false
+  });
+  map.add(postTrueColorLayer);
+  preTrueColorLayer = ui.Map.Layer({
+    eeObject: preImageGreenestClip,
+    visParams: {
+      bands: [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],
+      min: satelliteProps.min,
+      max: satelliteProps.max,
+      gamma: satelliteProps.gamma
+    },
+    name: "Pre True Color",
+    shown: false
+  });
+  map.add(preTrueColorLayer);
+
+  var post_cir = postImageGreenestClip.select(['Oa20_radiance', 'Oa12_radiance', 'Oa08_radiance']);
+  map.addLayer(post_cir, {min:15, max:70, gamma: 1.5}, 'post_cir', false);
+  var pre_cir = preImageGreenestClip.select(['Oa20_radiance', 'Oa12_radiance', 'Oa08_radiance']);
+  map.addLayer(pre_cir, {min:15, max:70, gamma: 1.5}, 'pre_cir', false);
+  var post_swir = postImageGreenestClip.select(['Oa12_radiance', 'Oa20_radiance', 'Oa08_radiance']);
+  map.addLayer(post_swir, {min:15, max:90, gamma:1}, 'post_swir', false);
+  var pre_swir = preImageGreenestClip.select(['Oa12_radiance', 'Oa20_radiance', 'Oa08_radiance']);
+  map.addLayer(pre_swir, {min:15, max:90, gamma:1}, 'pre_swir', false);
+
+  // Create two versions of the all lands layer - one for low zoom, one for high zoom
+  // Both stay in memory but only one is shown at a time based on zoom level
+  var standardAllLandsLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(waterMask)
+    .clip(geometry);
+
+  var reprojectedAllLandsLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(waterMask)
+    .clip(geometry)
+    .reproject({crs: 'EPSG:4326', scale: 240});
+
+  // Create two versions of the deciduous layer - one for low zoom, one for high zoom
+  // Both stay in memory but only one is shown at a time based on zoom level
+  var standardDeciduousLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(deciduousMask)
+    .clip(geometry);
+
+  var reprojectedDeciduousLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(deciduousMask)
+    .clip(geometry)
+    .reproject({crs: 'EPSG:4326', scale: 240});
+
+  // Create two versions of the evergreen layer - one for low zoom, one for high zoom
+  // Both stay in memory but only one is shown at a time based on zoom level
+  var standardEvergreenLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(evergreenMask)
+    .clip(geometry);
+
+  var reprojectedEvergreenLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(evergreenMask)
+    .clip(geometry)
+    .reproject({crs: 'EPSG:4326', scale: 240});
+
+  // Create two versions of the forest layer - one for low zoom, one for high zoom
+  // Both stay in memory but only one is shown at a time based on zoom level
+  var standardForestLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(forestMask)
+    .clip(geometry);
+
+  var reprojectedForestLayer = ndviChangeProduct
+    .sldStyle(index_sld_map[changeType])
+    .mask(forestMask)
+    .clip(geometry)
+    .reproject({crs: 'EPSG:4326', scale: 240});
+
+  // Start with just the standard layer at appropriate visibility
+  var currentZoom = map.getZoom();
+
+  var allLandsLayerIndex = map.layers().length();  // This will be the index where we add the all lands layer
+
+  // Add the appropriate layer based on initial zoom
+  if (currentZoom >= 12) {
+    map.addLayer(
+      reprojectedAllLandsLayer,
+      {},
+      'NDVI change - all lands',
+      false
+    );
+  } else {
+    map.addLayer(
+      standardAllLandsLayer,
+      {},
+      'NDVI change - all lands',
+      false
+    );
+  }
+
+  var deciduousLayerIndex = map.layers().length();  // This will be the index where we add the deciduous layer
+
+  // Add the appropriate layer based on initial zoom
+  if (currentZoom >= 12) {
+    map.addLayer(
+      reprojectedDeciduousLayer,
+      {},
+      'NDVI change - deciduous forest only',
+      false
+    );
+  } else {
+    map.addLayer(
+      standardDeciduousLayer,
+      {},
+      'NDVI change - deciduous forest only',
+      false
+    );
+  }
+
+  var evergreenLayerIndex = map.layers().length();  // This will be the index where we add the evergreen layer
+
+  // Add the appropriate layer based on initial zoom
+  if (currentZoom >= 12) {
+    map.addLayer(
+      reprojectedEvergreenLayer,
+      {},
+      'NDVI change - evergreen forest only',
+      false
+    );
+  } else {
+    map.addLayer(
+      standardEvergreenLayer,
+      {},
+      'NDVI change - evergreen forest only',
+      false
+    );
+  }
+
+  var forestLayerIndex = map.layers().length();  // This will be the index where we add the forest layer
+
+  // Add the appropriate layer based on initial zoom
+  if (currentZoom >= 12) {
+    map.addLayer(
+      reprojectedForestLayer,
+      {},
+      'NDVI change - forest only',
+      true
+    );
+  } else {
+    map.addLayer(
+      standardForestLayer,
+      {},
+      'NDVI change - forest only',
+      true
+    );
+  }
+
+  addHillshade(geometry);
+  addBoundaries(geometry);
+
+  // Track if we're in high zoom mode
+  var isHighZoom = currentZoom >= 12;
+
+  // Add a listener for zoom changes to replace layers when crossing the threshold
+  sentinel3ZoomListener = map.onChangeZoom(function() {
+    var newZoom = map.getZoom();
+    var newIsHighZoom = newZoom >= 12;
+    var forestShown = true;
+    var allLandsShown = false;
+    var deciduousShown = false;
+    var evergreenShown = false;
+
+    // Only take action if we've crossed the threshold
+    if (newIsHighZoom !== isHighZoom) {
+      // Update our state
+      isHighZoom = newIsHighZoom;
+
+      // Remove the current forest layer
+      map.layers().forEach(function(layer, index) {
+        if (layer.getName() === 'NDVI change - forest only') {
+          map.layers().remove(layer);
+          forestShown = layer.getShown();
+        }
+      });
+
+      // Remove the all lands layer
+      map.layers().forEach(function(layer, index) {
+        if (layer.getName() === 'NDVI change - all lands') {
+          map.layers().remove(layer);
+          allLandsShown = layer.getShown();
+        }
+      });
+
+      // Remove the deciduous layer
+      map.layers().forEach(function(layer, index) {
+        if (layer.getName() === 'NDVI change - deciduous forest only') {
+          map.layers().remove(layer);
+          deciduousShown = layer.getShown();
+        }
+      });
+
+      // Remove the evergreen layer
+      map.layers().forEach(function(layer, index) {
+        if (layer.getName() === 'NDVI change - evergreen forest only') {
+          map.layers().remove(layer);
+          evergreenShown = layer.getShown();
+        }
+      });
+
+      // Add the appropriate layer for the new zoom level at the stored index
+      if (isHighZoom) {
+        // Add the reprojected layer for high zoom at the specific index
+        map.layers().insert(allLandsLayerIndex, ui.Map.Layer(reprojectedAllLandsLayer, {}, 'NDVI change - all lands', allLandsShown));
+        map.layers().insert(deciduousLayerIndex, ui.Map.Layer(reprojectedDeciduousLayer, {}, 'NDVI change - deciduous forest only', deciduousShown));
+        map.layers().insert(evergreenLayerIndex, ui.Map.Layer(reprojectedEvergreenLayer, {}, 'NDVI change - evergreen forest only', evergreenShown));
+        map.layers().insert(forestLayerIndex, ui.Map.Layer(reprojectedForestLayer, {}, 'NDVI change - forest only', forestShown));
+        print('Added four reprojected layers at zoom level ' + newZoom);
+      } else {
+        // Add the standard layer for low zoom at the specific index
+        map.layers().insert(allLandsLayerIndex, ui.Map.Layer(standardAllLandsLayer, {}, 'NDVI change - all lands', allLandsShown));
+        map.layers().insert(deciduousLayerIndex, ui.Map.Layer(standardDeciduousLayer, {}, 'NDVI change - deciduous forest only', deciduousShown));
+        map.layers().insert(evergreenLayerIndex, ui.Map.Layer(standardEvergreenLayer, {}, 'NDVI change - evergreen forest only', evergreenShown));
+        map.layers().insert(forestLayerIndex, ui.Map.Layer(standardForestLayer, {}, 'NDVI change - forest only', forestShown));
+        print('Added four standard layers at zoom level ' + newZoom);
+      }
+    }
+  });
+};
+
+var submitChangeAnalysis = function (satelliteProps) {
+  // remove old layers
+  map.layers().reset();
+
+  // make global layers null
+  ndviChangeForestOnlyLayer = null;
+  ndviChangeEvergreenLayer = null;
+  ndviChangeDeciduousLayer = null;
+  ndviChangeAllLandsLayer = null;
+  ndviChangeNoWaterLayer = null;
+  preImageGreenestClip = null;
+  postImageGreenestClip = null;
+  preTrueColorLayer = null;
+  postTrueColorLayer = null;
+  ndviChangeProduct = null;
+  combinedCloudMask = null;
+
+  // update geometry with map extent at time of analysis
+  exportImageGeometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
 
   // set inspector label back to default value
   inspectorLabel.setValue(inspectorLabelDefaultMsg);
@@ -1859,8 +2187,7 @@ var submitChangeAnalysis = function (satelliteProps) {
   var postStart = ee.Date(dateFilterPostDateStart.getValue());
   var postEnd = ee.Date(dateFilterPostDateEnd.getValue());
 
-  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale() * mapExtentBufferMultiplier);
-  //var geometry = proclaimed;
+  var geometry = ee.Geometry(map.getBounds(true)).buffer(map.getScale());
   if (satelliteProps.combined !== true) {
     // check if we're processing L5/L8 or L8/L9 combined satellites
     preImageGreenestClip = disturbance(satelliteProps, 'NDVI', preStart, preEnd, geometry);
@@ -1880,59 +2207,36 @@ var submitChangeAnalysis = function (satelliteProps) {
     });
   });
 
-  // B10sliderPost.setDisabled(false);
+  // create a mask for the areas that would be masked out as clouds and add to map
+  var preCloudMask = preImageGreenestClip.select(QA_BAND).lt(CLOUD_THRESHOLD);
+  var postCloudMask = postImageGreenestClip.select(QA_BAND).lt(CLOUD_THRESHOLD);
+  combinedCloudMask = preCloudMask.or(postCloudMask);
 
-  // add layers to map
-  map.add(ui.Map.Layer(postImageGreenestClip.select('date').randomVisualizer(), {}, 'Post Date Used', false));
-  map.add(ui.Map.Layer(preImageGreenestClip.select('date').randomVisualizer(), {}, 'Pre Date Used', false));
+  // add date used layers to map
+  // map.add(ui.Map.Layer(postImageGreenestClip.select('date').randomVisualizer(), {}, 'Post Date Used', false));
+  // map.add(ui.Map.Layer(preImageGreenestClip.select('date').randomVisualizer(), {}, 'Pre Date Used', false));
 
-  /*map.addLayer(postImageGreenestClip.select([
-    satelliteProps.bands.red,
-    satelliteProps.bands.green,
-    satelliteProps.bands.blue
-  ]), {min: satelliteProps.min, max: satelliteProps.max}, 'Post True Color', false);
-  map.addLayer(preImageGreenestClip.select([
-    satelliteProps.bands.red,
-    satelliteProps.bands.green,
-    satelliteProps.bands.blue
-  ]), {min: satelliteProps.min, max: satelliteProps.max}, 'Pre True Color', false); */
-  // if (satelliteProps.satellite === 'COPERNICUS/S2_HARMONIZED' || satelliteProps.satellite === 'COPERNICUS/S2_SR_HARMONIZED') {
-  //   // AG perc based
-  //   stdDeviationImport.addAGMinMaxLayer(
-  //     satelliteProps, map, postImageGreenestClip, 'Agr. False Color', geometry, 1 //value between 0-1 for percent bounding
-  //   );
-  // }
 
-  // post std dev
-  // stdDeviationImport.addStandardDeviationLayer(
-  //   satelliteProps, map, postImageGreenestClip, 'Post True Color', geometry, 2, enableSubmit
-  // );
   // post %
-  stdDeviationImport.addPercentLayer(
+  addPercentLayer(
     satelliteProps,
     map,
     postImageGreenestClip,
     'Post True Color',
     geometry,
-    95,
-    enableSubmit
+    95
   );
-  // pre std dev
-  // stdDeviationImport.addStandardDeviationLayer(
-  //   satelliteProps, map, preImageGreenestClip, 'Pre True Color', geometry, 2, enableSubmit
-  // );
+
   // pre %
-  stdDeviationImport.addPercentLayer(
+  addPercentLayer(
     satelliteProps,
     map,
     preImageGreenestClip,
     'Pre True Color',
     geometry,
-    95,
-    enableSubmit
+    95
   );
 
-  var changeType = 'ABSOLUTE_NDVI';
   if (submitCheckbox.getValue() === true) {
     changeType = 'PERCENT_NDVI';
   }
@@ -1942,6 +2246,15 @@ var submitChangeAnalysis = function (satelliteProps) {
   addBoundaries(); // redraw the app boundaries
 };
 
+/////////////////////////////////////////////////////////////////
+// END MAIN LOGIC FOR CHANGE ANALYSIS
+/////////////////////////////////////////////////////////////////
+
+
+
+
+
+
 //////////////////////////////////////////////////////////////////////////////
 //////  FUNCTION FOR PRE AND POST DISTURBANCE
 //////////////////////////////////////////////////////////////////////////////
@@ -1949,7 +2262,8 @@ var disturbance = function (satelliteProps, chosenIndex, startDate, endDate, geo
   var imageCollection = ee
     .ImageCollection(satelliteProps.satellite)
     .filterDate(startDate, endDate)
-    .filterBounds(geometry);
+    .filterBounds(geometry)
+    .linkCollection(csPlus, [QA_BAND]);
 
   var withIndexAndDate_imageCollection;
   if (chosenIndex === 'NDVI') {
@@ -1962,6 +2276,10 @@ var disturbance = function (satelliteProps, chosenIndex, startDate, endDate, geo
 
   return greenest_withIndexAndDate_imageCollection_clip;
 };
+
+
+
+
 
 //////////////////////////////////////////////////////////////////////////////
 //////  FUNCTION FOR PRE AND POST DISTURBANCE COMBINED SATELLITES
@@ -1977,7 +2295,8 @@ var disturbanceCombined = function (satelliteProps, chosenIndex, startDate, endD
   var combinedSatellites = ee
     .ImageCollection(sat0ImageCollection.merge(sat1ImageCollection))
     .filterDate(startDate, endDate)
-    .filterBounds(Map.getBounds(true));
+    .filterBounds(Map.getBounds(true))
+    .linkCollection(csPlus, [QA_BAND]);
 
   var withIndexAndDate_imageCollection;
   if (chosenIndex === 'NDVI') {
@@ -2007,13 +2326,14 @@ var addDate = function (image) {
   return image.addBands(dateBand);
 };
 
+
+
+
+
 //////////////////////////////////////////////////////////////////
 ////  CALCULATE NDVI CHANGE
-/////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
 var calculateNDVIChange = function (pre, post, changeType, geometry) {
-  // removeLayerByName('NDVI change - all lands', map);
-  // removeLayerByName('NDVI change - no water', map);
-  // removeLayerByName('NDVI change - forest only', map);
   var forestMask = NLCDForestMask(geometry);
   var deciduousMask = NLCDDeciduousMask(geometry);
   var evergreenMask = NLCDEvergreenMask(geometry);
@@ -2034,54 +2354,135 @@ var calculateNDVIChange = function (pre, post, changeType, geometry) {
     absNDVIc_x100 = absNDVIc.multiply(100);
     ndviChangeProduct = absNDVIc_x100.int8();
   }
-  map.add(
-    ui.Map.Layer(
-      ndviChangeProduct.sldStyle(index_sld_map[changeType]).clip(geometry),
-      {},
-      'NDVI change - all lands',
-      false
-    )
-  );
-  // removeLayerByName('Calculating...');
-  map.add(
-    ui.Map.Layer(
-      ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry),
-      {},
-      'NDVI change - no water',
-      false
-    )
-  );
-  // removeLayerByName('Calculating...');
-  map.add(
-    ui.Map.Layer(
-      ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(forestMask).clip(geometry),
-      {},
-      'NDVI change - forest only',
-      true
-    )
-  );
-  map.add(
-    ui.Map.Layer(
-      ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(deciduousMask).clip(geometry),
-      {},
-      'NDVI change - deciduous forest only',
-      false
-    )
-  );
-  map.add(
-    ui.Map.Layer(
-      ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(evergreenMask).clip(geometry),
-      {},
-      'NDVI change - evergreen forest only',
-      false
-    )
-  );
-  // removeLayerByName('Calculating...');
-  //map.addLayer(ndviChangeProduct.select([changeType]), {}, 'absolute change b/w', false);
-  //map.addLayer(ndviChangeProduct.sldStyle(index_sld_map[changeType]), {}, 'absolute change');
+  ndviChangeAllLandsLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry);
+  ndviChangeNoWaterLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry);
+  ndviChangeForestOnlyLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(forestMask).clip(geometry);
+  ndviChangeDeciduousLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(deciduousMask).clip(geometry);
+  ndviChangeEvergreenLayer = ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(evergreenMask).clip(geometry);
+  // map.add(
+  //   ui.Map.Layer(
+  //     ndviChangeProduct.sldStyle(index_sld_map[changeType]).clip(geometry),
+  //     {},
+  //     'NDVI change - all lands',
+  //     false
+  //   )
+  // );
+  // map.add(
+  //   ui.Map.Layer(
+  //     ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(waterMask).clip(geometry),
+  //     {},
+  //     'NDVI change - no water',
+  //     false
+  //   )
+  // );
+  // map.add(
+  //   ui.Map.Layer(
+  //     ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(forestMask).clip(geometry),
+  //     {},
+  //     'NDVI change - forest only',
+  //     true
+  //   )
+  // );
+  // map.add(
+  //   ui.Map.Layer(
+  //     ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(deciduousMask).clip(geometry),
+  //     {},
+  //     'NDVI change - deciduous forest only',
+  //     false
+  //   )
+  // );
+  // map.add(
+  //   ui.Map.Layer(
+  //     ndviChangeProduct.sldStyle(index_sld_map[changeType]).mask(evergreenMask).clip(geometry),
+  //     {},
+  //     'NDVI change - evergreen forest only',
+  //     false
+  //   )
+  // );
 
   return ndviChangeProduct;
 };
+
+
+
+//////////////////////////////////////////////////////////////////
+////  FUNCTIONS FOR ADDING PERCENT LAYER
+/////////////////////////////////////////////////////////////////
+
+function addPercentLayer(satelliteProps, map, image, layerName, geometry, percent) {
+  var gammaValue = 1.5;
+  var lower_percentile = ee.Number(100).subtract(percent).divide(2);
+  var upper_percentile = ee.Number(100).subtract(lower_percentile);
+  var stats = image.select([satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],['value_red', 'value_green', 'value_blue']).reduceRegion({
+    reducer: ee.Reducer.percentile({
+      percentiles: [lower_percentile, upper_percentile],
+      outputNames: ['lower', 'upper'],
+    }),
+    geometry: geometry,
+    scale: satelliteProps.scale,
+    bestEffort: true
+  });
+  var vis_params = ee.Dictionary({
+    'min': [
+      ee.Number(stats.get('value_red_lower')),
+      ee.Number(stats.get('value_green_lower')),
+      ee.Number(stats.get('value_blue_lower'))
+    ],
+    'max': [
+      ee.Number(stats.get('value_red_upper')),
+      ee.Number(stats.get('value_green_upper')),
+      ee.Number(stats.get('value_blue_upper'))
+    ]
+  });
+  vis_params.evaluate(function(params) {
+    ee.Array(params.min).reduce(ee.Reducer.mean(), [0]).get([0]).evaluate(function(minValue) {
+      ee.Array(params.max).reduce(ee.Reducer.mean(), [0]).get([0]).evaluate(function(maxValue) {
+        if (layerName === "Pre True Color") {
+          preTrueColorLayer = ui.Map.Layer({
+            eeObject: image,
+            visParams: {
+              bands: [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],
+              min: minValue,
+              max: maxValue,
+              gamma: 1.5
+            },
+            name: layerName,
+            shown: false
+          })} else {
+          postTrueColorLayer = ui.Map.Layer({
+            eeObject: image,
+            visParams: {
+              bands: [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],
+              min: minValue,
+              max: maxValue,
+              gamma: 1.5
+            },
+            name: layerName,
+            shown: false
+          });
+        }
+        // }
+        // map.addLayer({
+        //   eeObject: image,
+        //   visParams: {
+        //     bands: [satelliteProps.bands.red, satelliteProps.bands.green, satelliteProps.bands.blue],
+        //     min: minValue,
+        //     max: maxValue,
+        //     gamma: 1.5
+        //   },
+        //   name: layerName,
+        //   shown: false
+        // });
+        enableSubmit();
+        addLayersToMap();
+      });
+    });
+  });
+}
+
+
+
+
 
 // MASKS AND HELPER FUNCTIONS
 
@@ -2197,15 +2598,15 @@ var addBoundaries = function () {
   var visallproc_surfwindow = clipped_allproc_surfwindow.style(vis);
 
   // Add FS Admin outlines to the map
-  var stateBorderLayer = ui.Map.Layer(stateOutlines, {}, 'State borders');
-  var countyBorderLayer = ui.Map.Layer(countyOutlines, {}, 'County borders', false);
-  var fsSurfaceOwnedLayer = ui.Map.Layer(visallproc_surfwindow, {}, 'FS Surface-Owned window', false);
-  var fsallproclaimedLayer = ui.Map.Layer(outline, { palette: '66ff00' }, 'FS Proclaimed', false);
+  stateBordersLayer = ui.Map.Layer(stateOutlines, {}, 'State borders');
+  countyBordersLayer = ui.Map.Layer(countyOutlines, {}, 'County borders', false);
+  fsSurfaceOwnedWindowLayer = ui.Map.Layer(visallproc_surfwindow, {}, 'FS Surface-Owned window', false);
+  fsProclaimedLayer = ui.Map.Layer(outline, { palette: '66ff00' }, 'FS Proclaimed', false);
 
-  Map.add(stateBorderLayer);
-  Map.add(countyBorderLayer);
-  Map.add(fsSurfaceOwnedLayer);
-  Map.add(fsallproclaimedLayer);
+  Map.add(fsSurfaceOwnedWindowLayer);
+  Map.add(fsProclaimedLayer);
+  Map.add(countyBordersLayer);
+  Map.add(stateBordersLayer);
 };
 
 var addHillshade = function (geometry) {
@@ -2216,7 +2617,7 @@ var addHillshade = function (geometry) {
     min: 0.0,
     max: 255.0,
     gamma: 0.4,
-    opacity: 0.25,
+    opacity: 0.225,
   };
 
   var Ten_m_clip = hillshade.clip(geometry);
@@ -2229,146 +2630,15 @@ var addHillshade = function (geometry) {
 // Everything that is needed to actually boot the application
 addBoundaries();
 if (ui.url.get('autoRun') === true) {
-  ui.util.setTimeout(submitChangeAnalysis(SATELLITE_PROPERTIES[satelliteSelector.getValue()]), 2000);
+  ui.util.setTimeout(function() {
+    if (satelliteSelector.getValue() === "Sentinel 3 TOA") {
+      submitSentinel3ChangeAnalysis(SATELLITE_PROPERTIES[satelliteSelector.getValue()]);
+    } else {
+      submitChangeAnalysis(SATELLITE_PROPERTIES[satelliteSelector.getValue()]);
+      submit.setDisabled(true);
+      disableSubmit();
+    }
+  }, 2000);
 }
 ui.root.insert(0, leftPanel);
-map.add(sliderPanel);
-// ui.root.insert(1, sliderPanel);
 map.add(legend);
-
-// END OLD app.boot()
-
-/////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////
-// national forest unit names
-
-// Allegheny National Forest
-// Allegheny Purchase Unit
-// Alpena S.F. Purchase Unit
-// Angelina National Forest
-// Apalachicola National Forest
-// Au Sable Land Utilization Project
-// Bayou Beouf Purchase Unit
-// Bienville National Forest
-// Black Kettle National Grassland
-// Caddo National Grassland
-// Cedar Creek Purchase Unit
-// Chattahoochee National Forest
-// Chattahoochee Purchase Unit
-// Chequamegon National Forest
-// Cherokee National Forest
-// Cherokee Purchase Unit
-// Chippewa National Forest
-// Cimarron National Grassland
-// Comanche National Grassland
-// Conecuh National Forest
-// Croatan National Forest
-// Crossett Experimental Area
-// Current River Purchase Unit
-// Daniel Boone National Forest
-// Davy Crockett National Forest
-// De Soto National Forest
-// De Soto Purchase Unit
-// Delta National Forest
-// Divided Mountain Purchase Unit
-// Finger Lakes National Forest
-// Forest Hydro. Lab. Experimental Area
-// Forest I&D CT Lab. Experimental Area
-// Forest I&D OH. Lab. Experimental Area
-// Forest Prod. Marketing Lab. Experimental Area
-// Forest Products Lab. Experimental Area
-// Forestry Sci. GA. Lab. Experimental Area
-// Forestry Sci. N.C. Lab. Experimental Area
-// Francis Marion National Forest
-// George Washington National Forest
-// Gory Hole Cave Purchase Unit
-// Green Mountain National Forest
-// Green Mountain Other
-// Hiawatha National Forest
-// Holly Springs National Forest
-// Homochitto National Forest
-// Homochitto Purchase Unit
-// Hoosier National Forest
-// Hoosier Purchase Unit
-// Huron National Forest
-// Huron Purchase Unit
-// Jefferson National Forest
-// Kabetogama Purchase Unit
-// Kimberling Creek Purchase Unit
-// Kinkaid Lake Purchase Unit
-// Kiowa National Grassland
-// Kisatchie National Forest
-// Land Between the Lakes Other
-// Lincoln National Forest
-// Lyndon B. Johnson National Grassland
-// Manistee National Forest
-// Mark Twain National Forest
-// Mark Twain Purchase Unit
-// Massabesic Experimental Forest
-// McClellan Creek National Grassland
-// Middle Mississippi Purchase Unit
-// Midewin Other
-// Military Hill Purchase Unit
-// Monongahela National Forest
-// Nantahala National Forest
-// Nantahala Purchase Unit
-// Nekoosa Purchase Unit
-// Nicolet National Forest
-// North Ewen Purchase Unit
-// Northern Hardwood Lab Experimental Area
-// Ocala National Forest
-// Ocmulgee Purchase Unit
-// Oconee National Forest
-// Osceola National Forest
-// Ottawa National Forest
-// Ouachita National Forest
-// Ozark National Forest
-// Ozark Purchase Unit
-// Paynesville Purchase Unit
-// Pea River Land Utilization Project
-// Pigeon River Purchase Unit
-// Pinchot Inst. Other
-// Pinhook Purchase Unit
-// Pisgah National Forest
-// Red Creek Purchase Unit
-// Redbird Purchase Unit
-// Richland Creek Purchase Unit
-// Rita Blanca National Grassland
-// Rose Purchase Unit
-// Sabine National Forest
-// Sam Houston National Forest
-// Sewee Purchase Unit
-// Shawnee National Forest
-// Shawnee Purchase Unit
-// South Ewen Purchase Unit
-// Southern Hardwoods Lab Experimental Area
-// St. Francis National Forest
-// Stumpy Point Purchase Unit
-// Sumter National Forest
-// Superior National Forest
-// Talladega National Forest
-// Tombigbee National Forest
-// Tuskegee National Forest
-// Uwharrie National Forest
-// Wayne National Forest
-// Wayne Purchase Unit
-// White Mountain National Forest
-// White Mountain Purchase Unit
-// William B. Bankhead National Forest
-// Yonah Mountain Purchase Unit
-// Bienville National Forest
-
-/////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////
-
-// maintenance
-
-//   change version 640, title 641
-//   change opening dates: pre, 816; post, 861
-//   change from fs-export prompt x3 (default) to gen-user auto export x3, lines 61, 62
-
-// national forest focus
-
-//   uncomment 29+, 44
-//   set map center and zoom, 65-67
-//   change export geometry to nf, 7-sets of redirect, 1020-1262, 1787
